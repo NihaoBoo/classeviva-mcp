@@ -58,7 +58,7 @@ Incrocia dati presi direttamente dal registro voti, agenda, compiti, argomenti d
     curl -LsSf https://astral.sh/uv/install.sh | sh
     ```
 
-### Punto 3 — Fai il Login Sicuro (Una sola volta)
+### Punto 3 — Esegui il login e salva le credenziali (una sola volta)
 Non serve scaricare cartelle a mano. Apri il terminale ed esegui direttamente:
 ```bash
 uvx --from git+https://github.com/NihaoBoo/classeviva-mcp classeviva-mcp login
@@ -142,7 +142,7 @@ Ci sono due modi per usare `classeviva-mcp` fuori casa dal telefono:
 Se usi un ambiente che espone i tuoi server MCP in cloud o rete privata (es. sessioni remote di **Antigravity**, **Claude**, **Opencode** o una tua istanza **LibreChat / Open-WebUI** raggiungibile via Tailscale).
 
 ### Modo 2 — Tramite un Bot su Telegram o Discord (solo DM privati)
-`classeviva-mcp` fornisce i tool di lettura del registro; per usarlo dentro Telegram o Discord ti basta agganciarlo a un agente che fa da ponte con la chat (come agent menzionati precedentemente o queste altre soluzioni valide **Hermes Agent**, **OpenClaw** o automazioni **n8n**):
+`classeviva-mcp` fornisce tool di consultazione del registro e di gestione del contesto locale; per usarlo in una DM privata Telegram o Discord puoi collegarlo a un agente che fa da ponte con la chat (ad esempio **Hermes Agent**, **OpenClaw** o automazioni **n8n**):
 
 1. **Dove tenerlo acceso**: sul tuo PC quando è acceso, su un vecchio telefono Android con **Termux**, oppure gratis 24/7 su una piccola VPS (**Oracle Cloud Free Tier**).
 2. **Quale modello AI usare (anche a costo zero)**: se non hai un abbonamento AI a pagamento, crea una chiave gratuita su **[OpenRouter](https://openrouter.ai)** e usa i modelli `:free` (come Gemini Flash o Llama/DeepSeek free) configurandoli su **Hermes Agent**, **Opencode** o tramite **CC Switch**.
@@ -194,8 +194,9 @@ Per evitare che la cache locale (`%LOCALAPPDATA%\classeviva-mcp` su Windows o `~
 - **Logout incompleto rispetto ai dati locali.** Il comando `logout` elimina le credenziali dal Keyring, il fallback `credentials.json` e `session_cache.json`, ma non elimina `student_context.json`: l'URL iCal e gli altri dati salvati nel contesto possono quindi rimanere sul dispositivo.
 - **La lettura di una circolare può modificarne lo stato sul registro.** `read_notice_pdf` richiama l'endpoint Spaggiari `noticeboard/read`; il comportamento del servizio remoto può segnare la circolare come letta. `list_notices`, invece, legge l'elenco e aggiorna soltanto il tracciamento locale delle circolari viste dall'agent.
 - **Output diagnostici non completamente anonimi.** `login` stampa l'identificativo dell'account e può stampare scuola e classe; `doctor` può stampare classe o scuola. Non condividere integralmente questi output in issue pubbliche o log accessibili ad altri.
+- **Limiti incompleti sui file in ingresso.** Il limite di 15 file e 25 MB è applicato all'estrazione di archivi ZIP generici, ma i PDF, DOCX e XLSX scaricati direttamente non hanno un limite generale di dimensione o di pagine prima del parsing. Anche il download del feed iCal non impone un limite esplicito alla dimensione della risposta. File molto grandi o costruiti appositamente possono quindi consumare memoria e CPU; i limiti ZIP non proteggono tutti i percorsi di parsing.
 
-Questi limiti richiedono modifiche al codice, non possono essere risolti soltanto impostando `CLASSEVIVA_PUBLIC_MODE`. Prima di un uso condiviso occorre almeno introdurre autorizzazioni per chiamante, minimizzazione dei dati restituiti, protezione SSRF per i feed, gestione sicura dei segreti e una procedura di logout/cancellazione completa.
+Questi limiti richiedono modifiche al codice, non possono essere risolti soltanto impostando `CLASSEVIVA_PUBLIC_MODE`. Prima di un uso condiviso occorre almeno introdurre autorizzazioni per chiamante, minimizzazione dei dati restituiti, protezione SSRF per i feed, gestione sicura dei segreti, limiti di dimensione per i file e una procedura di logout/cancellazione completa.
 
 ---
 
