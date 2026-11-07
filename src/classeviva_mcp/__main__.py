@@ -174,6 +174,8 @@ async def _cmd_login(args: argparse.Namespace) -> int:
     print("  all'agente qualcosa inerente al registro, come leggere voti o")
     print("  agenda, per verificare che funzioni.")
     print()
+    print("  Computer condiviso o di scuola? Esegui `logout --purge` prima di uscire.")
+    print()
     return 0
 
 
@@ -184,6 +186,8 @@ async def _cmd_doctor(args: argparse.Namespace) -> int:
     try:
         creds = store.load()
         print(f"[OK] Credenziali trovate (sorgente: {creds.source})")
+        print(f"     Cartella dati      : {store.data_dir}")
+        print(f"     Sessione in cache  : {'presente' if store.session_file.exists() else 'assente'}")
     except Exception as exc:
         print(f"[FAIL] {exc}")
         return 1
@@ -220,8 +224,15 @@ async def _cmd_doctor(args: argparse.Namespace) -> int:
 
 def _cmd_set_classroom_url(args: argparse.Namespace) -> int:
     url = (args.url or "").strip()
-    if not url:
-        url = input("Link segreto .ics di Google Classroom: ").strip()
+    if url:
+        print(
+            "Attenzione: passare il link come argomento puo' lasciarlo nella cronologia del terminale.",
+            file=sys.stderr,
+        )
+    else:
+        url = getpass.getpass(
+            "Link segreto .ics di Google Classroom (input nascosto): "
+        ).strip()
     if not url:
         print("Errore: URL vuoto.", file=sys.stderr)
         return 1
@@ -247,10 +258,13 @@ def _cmd_logout(args: argparse.Namespace) -> int:
     except RuntimeError as exc:
         print(f"[ERRORE] {exc}", file=sys.stderr)
         return 1
+    print(f"Cartella dati: {store.data_dir}")
     if args.purge:
         print("Credenziali, sessione, contesto studente e allegati rimossi.")
     else:
-        print("Credenziali e sessione rimosse. Orario e note conservati (usa --purge per cancellare tutto).")
+        print("Credenziali e sessione rimosse. Orario e note conservati.")
+        print("Su un computer condiviso usa `logout --purge` per cancellare tutto.")
+    print("Nota: le variabili d'ambiente non vengono modificate; rimuovile a mano se le usi.")
     return 0
 
 
@@ -285,7 +299,11 @@ def main() -> None:
     set_url = sub.add_parser(
         "set-classroom-url", help="Salva il link segreto .ics di Google Classroom senza passare dalla chat"
     )
-    set_url.add_argument("url", nargs="?", help="URL .ics (se omesso viene richiesto in modo interattivo)")
+    set_url.add_argument(
+        "url",
+        nargs="?",
+        help="URL .ics (sconsigliato: resta nella cronologia; se omesso viene chiesto con input nascosto)",
+    )
     set_url.add_argument(
         "--allow-insecure-plaintext",
         action="store_true",

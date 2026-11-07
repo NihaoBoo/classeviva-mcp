@@ -21,23 +21,61 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Resolve release tag
+
+      - name: Resolve and validate release tag
         id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          ACTOR: ${{ github.triggering_actor }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          TAG="${{ github.event.release.tag_name }}"
+          set -euo pipefail
+
+          # Only the repository owner may trigger a manual re-point of stable.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$ACTOR" != "$REPO_OWNER" ]; then
+            echo "::error::Only $REPO_OWNER can move the stable tag manually."
+            exit 1
+          fi
+
+          TAG="$RELEASE_TAG"
           if [ -z "$TAG" ]; then
-            TAG="${{ inputs.tag }}"
+            TAG="$INPUT_TAG"
           fi
           if [ -z "$TAG" ]; then
             TAG=$(gh release view --json tagName --jq .tagName)
           fi
+          if [ -z "$TAG" ]; then
+            echo "::error::Impossibile determinare il tag della release."
+            exit 1
+          fi
+
+          # Treat the value as data, never as shell code. Reject anything that
+          # is not a syntactically valid, existing tag in this repository.
+          if ! printf '%s' "$TAG" | grep -Eq '^v?[0-9A-Za-z][0-9A-Za-z._-]*$'; then
+            echo "::error::Formato tag non valido."
+            exit 1
+          fi
+          if ! git check-ref-format "refs/tags/$TAG"; then
+            echo "::error::Nome tag non valido per git."
+            exit 1
+          fi
+          if ! git rev-parse --verify --quiet "refs/tags/$TAG^{commit}" >/dev/null; then
+            echo "::error::Il tag $TAG non esiste nel repository."
+            exit 1
+          fi
+
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
       - name: Move stable tag
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          COMMIT=$(git rev-list -n 1 "${{ steps.resolve.outputs.tag }}")
-          git tag -f -a stable -m "Latest stable release: ${{ steps.resolve.outputs.tag }}" "$COMMIT"
+          COMMIT=$(git rev-list -n 1 "refs/tags/$TAG^{commit}")
+          git tag -f -a stable -m "Latest stable release: $TAG" "$COMMIT"
           git push origin refs/tags/stable --force

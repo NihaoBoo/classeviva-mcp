@@ -4,6 +4,42 @@ Tutte le modifiche rilevanti sono documentate in questo file.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e il
 progetto adotta [Semantic Versioning](https://semver.org/lang/it/).
 
+## [1.1.2] - 2026-11-07
+
+### Added
+
+- Sezione [SECURITY.md](SECURITY.md#computer-pubblici-o-condivisi) e callout
+  README sull'uso su computer scolastici o condivisi: il Keyring protegge dagli
+  altri account del sistema, non da chi usa lo stesso account.
+- Comandi `logout --purge` documentati per la pulizia su PC non personali, con
+  indicazione che non richiedono privilegi di amministratore.
+- `doctor` mostra la cartella dati e indica se `session_cache.json` è presente.
+- Test per default `allow_mark_as_read=False`, selezione di un solo allegato e
+  limite totale di byte per circolare.
+
+### Changed
+
+- `read_notice_pdf` usa `allow_mark_as_read=False` come default: una circolare
+  nuova non viene più segnata come letta senza consenso esplicito. I prompt
+  `setup` e `notices_brief` chiedono conferma allo studente.
+- `attachment_index` viene applicato prima del download: viene scaricato solo
+  l'allegato richiesto invece di tutti.
+- Download di allegati e feed iCal in streaming, senza caricare il corpo in
+  memoria prima di applicare il limite. Nuovo limite complessivo di 40 MB per
+  circolare, oltre al limite di 20 MB per singolo allegato.
+- `set-classroom-url` usa input nascosto (`getpass`) e avvisa se il link viene
+  passato come argomento, perché resterebbe nella cronologia del terminale.
+- `login` ricorda di eseguire `logout --purge` su computer condivisi; `logout`
+  mostra la cartella dati e segnala che le variabili d'ambiente non vengono
+  rimosse.
+- `stable-tag.yml` passa i tag tramite variabili d'ambiente, li valida, verifica
+  che esistano nel repository e limita il rerun manuale al proprietario.
+- `LICENSE` contiene solo il testo MIT; il disclaimer è stato spostato in
+  `NOTICE.md` per far riconoscere la licenza a GitHub.
+- `PRIVACY.md` descrive anche il caso `GOOGLE_ACCESS_TOKEN` da variabile
+  d'ambiente e la pulizia su computer condivisi.
+- Classifier di sviluppo allineato a `5 - Production/Stable`.
+
 ## [1.1.1] - 2026-11-07
 
 ### Added

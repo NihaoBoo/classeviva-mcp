@@ -187,16 +187,20 @@ async def fetch_classroom_ical_tasks(
     )
     try:
         for _ in range(MAX_REDIRECTS + 1):
-            response = await client.get(clean_url, headers={"Accept-Encoding": "identity"})
-            if response.status_code in (301, 302, 303, 307, 308):
-                location = response.headers.get("location", "")
-                if not location:
-                    raise ValueError("Redirect iCal senza header Location.")
-                clean_url = validate_ical_url(urljoin(clean_url, location))
-                continue
-            response.raise_for_status()
-            raw_bytes = await _read_limited(response, MAX_ICAL_BYTES)
-            return parse_classroom_ics(raw_bytes, start_date=start_date, end_date=end_date)
+            async with client.stream(
+                "GET", clean_url, headers={"Accept-Encoding": "identity"}
+            ) as response:
+                if response.status_code in (301, 302, 303, 307, 308):
+                    location = response.headers.get("location", "")
+                    if not location:
+                        raise ValueError("Redirect iCal senza header Location.")
+                    clean_url = validate_ical_url(urljoin(clean_url, location))
+                    continue
+                response.raise_for_status()
+                raw_bytes = await _read_limited(response, MAX_ICAL_BYTES)
+                return parse_classroom_ics(
+                    raw_bytes, start_date=start_date, end_date=end_date
+                )
         raise ValueError("Troppi redirect nel feed iCal.")
     finally:
         if own_client:

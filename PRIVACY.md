@@ -12,11 +12,18 @@ Spaggiari ClasseViva e Google Classroom.
 | Email / codice utente e password ClasseViva | Keyring di sistema o fallback cifrato DPAPI | Autenticazione a Spaggiari |
 | Token di sessione Spaggiari (`token`, `ident`, `student_id`) | Keyring/fallback cifrato (`session_cache.json`) | Evitare login ripetuti |
 | URL segreto `.ics` di Google Classroom | Keyring/fallback cifrato | Lettura compiti Classroom |
-| Token OAuth Google (opzionale) | Keyring/fallback cifrato | Lettura API Classroom |
+| Token OAuth Google (opzionale) | Variabile d'ambiente `GOOGLE_ACCESS_TOKEN`, oppure Keyring/fallback cifrato | Lettura API Classroom |
 | Classe, indirizzo, numero di registro, note, orario | `student_context.json` locale | Contesto per l'agente |
 | ID delle circolari viste | `student_context.json` locale | Etichetta `NUOVA` / `GIÀ VISTA` |
 | Allegati delle circolari | cartella `attachments/` locale | Lettura PDF/DOCX/XLSX |
 | Voti, assenze, lezioni, agenda | Non persistiti: letti dall'API e restituiti all'agente | Risposta alle richieste |
+
+Il token OAuth Google può essere fornito anche tramite la variabile d'ambiente
+`GOOGLE_ACCESS_TOKEN`: in quel caso il programma lo legge a runtime e **non lo
+salva** nei propri file. La variabile resta però nella shell o nella
+configurazione del client, dove va rimossa manualmente. Lo stesso vale per
+`CLASSEVIVA_USER`, `CLASSEVIVA_PASSWORD`, `CLASSROOM_ICAL_URL` e
+`CLASSEVIVA_PROFILE`.
 
 ## Basi e finalità
 
@@ -40,10 +47,19 @@ Nessun altro destinatario è previsto dal codice.
 
 - `classeviva-mcp logout` rimuove credenziali e sessione; conserva orario e note.
 - `classeviva-mcp logout --purge` rimuove anche contesto studente e allegati.
+  Non richiede privilegi di amministratore.
 - La cartella dati si trova in:
   - Windows: `%LOCALAPPDATA%\classeviva-mcp`
   - macOS: `~/Library/Application Support/classeviva-mcp`
   - Linux: `$XDG_DATA_HOME/classeviva-mcp` o `~/.local/share/classeviva-mcp`
+- **Su un computer pubblico o condiviso**, esegui `logout --purge` prima di
+  uscire. Cancellare a mano solo le voci del Keyring non basta:
+  `session_cache.json` contiene il token di sessione e resta fino a `logout`.
+  Il Keyring protegge i dati dagli altri account del sistema operativo, non da
+  chi usa lo stesso account. Dettagli in
+  [SECURITY.md](SECURITY.md#computer-pubblici-o-condivisi).
+- `logout` non revoca il token lato Spaggiari: in caso di sospetto, cambia la
+  password ClasseViva da un altro dispositivo.
 
 ## Sicurezza del trattamento
 
@@ -65,5 +81,5 @@ la loro informativa.
 
 ## Modifiche
 
-Questa informativa si riferisce alla versione 1.1.1. Le modifiche future saranno
+Questa informativa si riferisce alla versione 1.1.2. Le modifiche future saranno
 registrate in [CHANGELOG.md](CHANGELOG.md).

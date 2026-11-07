@@ -7,7 +7,7 @@
 Incrocia dati presi direttamente dal registro voti, agenda, compiti, argomenti delle lezioni e circolari della bacheca scolastica con qualsiasi agente AI compatibile MCP.
 
 <p align="center">
-  <a href="https://github.com/NihaoBoo/classeviva-mcp/releases"><img src="https://img.shields.io/badge/release-v1.1.1-blue?style=flat-square" alt="release" height="20"></a>&nbsp;
+  <a href="https://github.com/NihaoBoo/classeviva-mcp/releases"><img src="https://img.shields.io/badge/release-v1.1.2-blue?style=flat-square" alt="release" height="20"></a>&nbsp;
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white" alt="python" height="20"></a>&nbsp;
   <a href="https://github.com/NihaoBoo/classeviva-mcp"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square" alt="platform" height="20"></a>&nbsp;
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/mcp-protocol-brightgreen?style=flat-square" alt="mcp" height="20"></a>&nbsp;
@@ -67,7 +67,10 @@ uvx --from git+https://github.com/NihaoBoo/classeviva-mcp@stable classeviva-mcp 
 
 > **Dove finisce l'installazione?** `uvx` non installa nulla in modo permanente: crea un ambiente temporaneo nella cache di `uv` (es. `%LOCALAPPDATA%\uv\cache` su Windows, `~/.cache/uv` su Linux/macOS) e lo riusa ai comandi successivi. Con `uv tool install` invece il comando `classeviva-mcp` viene installato stabilmente e aggiunto al `PATH`.
 
-> `@stable` punta sempre all'ultima release stabile. Se vuoi bloccare una versione esatta, sostituisci `@stable` con `@v1.1.1`.
+> `@stable` punta sempre all'ultima release stabile. Se vuoi bloccare una versione esatta, sostituisci `@stable` con `@v1.1.2`.
+
+> ⚠️ **Computer di scuola o condivisi**
+> `classeviva-mcp` è pensato per **un solo account su un dispositivo personale**. Non usarlo su un PC con account condiviso (`studente`, `lab`, `aula`...): chiunque usi quell'account può aprire il Keyring e leggere le credenziali, e due studenti che fanno `login` si sovrascrivono a vicenda. Anche con un account personale, un amministratore della macchina può accedere al profilo. Se devi usarlo su un computer non tuo, esegui **`logout --purge` prima di uscire**: non servono privilegi di admin. Dettagli in [SECURITY.md](SECURITY.md#computer-pubblici-o-condivisi).
 
 Ti chiederà:
 1. **Email o Codice ClasseViva** (`S...` / `G...`).
@@ -128,7 +131,7 @@ classeviva-mcp set-classroom-url
 
 `uvx` scarica e riusa un ambiente temporaneo nella cache di `uv`, quindi non devi sapere dove finiscono i file: il comando funziona allo stesso modo dalla prima esecuzione in poi. Con `uv tool install` il comando è già nel `PATH` e non serve anteporre `uvx`.
 
-Il comando chiede il link in modo interattivo (oppure accetta l'URL come argomento) e lo salva nel Keyring o nel fallback cifrato. In questo modo il segreto non passa dal provider AI.
+Il comando chiede il link con **input nascosto** e lo salva nel Keyring o nel fallback cifrato, così il segreto non passa dal provider AI. Puoi anche passarlo come argomento, ma è **sconsigliato**: resterebbe nella cronologia del terminale.
 
 Il link iCal è accettato solo se punta a `calendar.google.com` o `classroom.google.com`, usa HTTPS sulla porta 443 e risolve verso un indirizzo pubblico. Redirect verso host diversi, IP privati/loopback/link-local e risposte oltre 5 MB vengono bloccati.
 
@@ -192,7 +195,7 @@ Su [Discord Developer Portal](https://discord.com/developers/applications):
 | `get_agenda` | Verifiche, interrogazioni, compiti e note tra due date. | 🔒 **Sì** |
 | `get_lessons` | **Argomenti spiegati dai prof** a lezione per preparare verifiche e recuperi. | 🔒 **Sì** |
 | `list_notices` | Elenca tutte le circolari in bacheca senza nascondere quelle vecchie, marcandole come `🆕 NUOVA` o `📌 GIÀ VISTA`. | No |
-| `read_notice_pdf` | Estrae testo da `.pdf`/`.docx`/`.xlsx`/`.zip` filtrando per classe, o renderizza PNG se scansionato. In read-only non segna come letta e non salva file. | No |
+| `read_notice_pdf` | Estrae testo da `.pdf`/`.docx`/`.xlsx`/`.zip` filtrando per classe, o renderizza PNG se scansionato. Non segna come letta senza consenso esplicito; in read-only non salva file. | No |
 | `get_grades` | Voti, medie ponderate per materia ed elenco insufficienze (`< 6.0`). | 🔒 **Sì** |
 | `calculate_grade_target` | Calcola quale voto serve nella prossima verifica per arrivare alla media obiettivo. | 🔒 **Sì** |
 | `get_absences` | Assenze, ritardi e uscite anticipate. | 🔒 **Sì** |
@@ -209,15 +212,29 @@ Per evitare che la cache locale (`%LOCALAPPDATA%\classeviva-mcp` su Windows o `~
 
 ## Sicurezza e privacy
 
-> **Importante:** questa sezione descrive il comportamento della v1.1.1; non rappresenta una certificazione di sicurezza. Non esporre il server a gruppi, utenti non fidati o Internet. Dettagli completi in [SECURITY.md](SECURITY.md) e [PRIVACY.md](PRIVACY.md).
+> **Importante:** questa sezione descrive il comportamento della v1.1.2; non rappresenta una certificazione di sicurezza. Non esporre il server a gruppi, utenti non fidati o Internet. Dettagli completi in [SECURITY.md](SECURITY.md) e [PRIVACY.md](PRIVACY.md).
 
 - **`CLASSEVIVA_READ_ONLY_MODE` (alias `CLASSEVIVA_PUBLIC_MODE`) minimizza i dati e disabilita le scritture.** In questa modalità i tool personali e di scrittura (`get_grades`, `get_absences`, `get_homework`, `get_agenda`, `get_lessons`, `calculate_grade_target`, `update_student_context`, `save_class_timetable`) non vengono registrati e le funzioni sollevano `PermissionError`. `get_today_context` restituisce un profilo senza nome, cognome e identificativi, e un contesto senza numero di registro, note o ID delle circolari viste. Resta comunque una modalità per singolo account, **non** un sistema multiutente: il server non autentica i chiamanti.
 - **Il feed Classroom è protetto contro SSRF.** Sono ammessi solo host `calendar.google.com` e `classroom.google.com`, schema HTTPS, porta 443 e risoluzione verso IP pubblici. I redirect vengono seguiti manualmente e rivalidati (massimo 3), la risposta è limitata a 5 MB e `trust_env=False` evita proxy ambientali. Il link si configura solo via CLI (`classeviva-mcp set-classroom-url`) e non viene mai restituito dai tool.
 - **I segreti restano nel Keyring o in un fallback cifrato.** Su Windows il fallback usa DPAPI; su Linux/macOS senza Keyring il salvataggio fallisce in modo esplicito, salvo `--allow-insecure-plaintext`. I file sono scritti in modo atomico con permessi `0600` dove supportati. `session_cache.json` contiene solo `token`, `ident` e `student_id`. L'URL iCal viene migrato automaticamente fuori da `student_context.json`.
-- **Logout esplicito.** `classeviva-mcp logout` rimuove credenziali e sessione ma conserva orario e note; `classeviva-mcp logout --purge` elimina anche `student_context.json` e la cache degli allegati. Gli errori di cancellazione dal Keyring vengono segnalati.
-- **La lettura di una circolare può modificarne lo stato sul registro.** Spaggiari restituisce testo e allegati completi solo dopo l'endpoint `noticeboard/read`, che segna la circolare come letta. `read_notice_pdf` espone `allow_mark_as_read` (default `True`) e restituisce `notice_marked_as_read` / `notice_was_unread`; con `allow_mark_as_read=False` su una circolare nuova restituisce solo i metadati e non modifica lo stato remoto. In `READ_ONLY_MODE` il valore è forzato a `False` e `save_pdf` è ignorato. `list_notices` non chiama mai l'endpoint di lettura.
-- **Output diagnostici minimizzati.** `login` e `doctor` non stampano nome, cognome o identificativo completo; `--verbose` mostra solo scuola/classe.
-- **Limiti sulle risorse in ingresso.** Allegati fino a 20 MB, PDF fino a 50 pagine, XML DOCX fino a 10 MB, XLSX fino a 500 righe × 50 colonne × 20 fogli, ZIP fino a 15 file / 25 MB decompressi con profondità massima 1. I redirect degli allegati sono ammessi solo verso `*.spaggiari.eu` e il download verso il CDN avviene senza header di autenticazione.
+- **Logout esplicito.** `classeviva-mcp logout` rimuove credenziali e sessione ma conserva orario e note; `classeviva-mcp logout --purge` elimina anche `student_context.json` e la cache degli allegati. Nessuno dei due richiede privilegi di amministratore. Cancellare a mano solo le voci del Keyring **non basta**: `session_cache.json` contiene il token di sessione e resta fino a `logout`. `logout` non revoca il token lato Spaggiari: in caso di sospetto cambia la password da un altro dispositivo.
+- **La lettura di una circolare può modificarne lo stato sul registro.** Spaggiari restituisce testo e allegati completi solo dopo l'endpoint `noticeboard/read`, che segna la circolare come letta. `read_notice_pdf` espone `allow_mark_as_read` con **default `False`**: su una circolare nuova restituisce solo i metadati e non modifica lo stato remoto. Passa `allow_mark_as_read=True` solo dopo aver avvisato lo studente; i prompt `setup` e `notices_brief` chiedono conferma. Il tool restituisce `notice_marked_as_read` / `notice_was_unread`. In `READ_ONLY_MODE` il valore è forzato a `False` e `save_pdf` è ignorato. `list_notices` non chiama mai l'endpoint di lettura.
+- **Output diagnostici minimizzati.** `login` e `doctor` non stampano nome, cognome o identificativo completo; `--verbose` mostra solo scuola/classe. `doctor` mostra la cartella dati e indica se la sessione è in cache.
+- **Limiti sulle risorse in ingresso.** Download in streaming: allegati fino a 20 MB ciascuno e 40 MB complessivi per circolare, feed iCal fino a 5 MB. Con `attachment_index` viene scaricato solo l'allegato richiesto. PDF fino a 50 pagine, XML DOCX fino a 10 MB, XLSX fino a 500 righe × 50 colonne × 20 fogli, ZIP fino a 15 file / 25 MB decompressi con profondità massima 1. I redirect degli allegati sono ammessi solo verso `*.spaggiari.eu` e il download verso il CDN avviene senza header di autenticazione.
+
+### 🧹 Pulizia su computer condivisi
+
+Prima di lasciare un PC che non è tuo:
+
+```bash
+# Se usi uvx (senza installazione permanente)
+uvx --from git+https://github.com/NihaoBoo/classeviva-mcp@stable classeviva-mcp logout --purge
+
+# Se lo hai installato con uv tool install
+classeviva-mcp logout --purge
+```
+
+Se hai impostato variabili d'ambiente (`CLASSEVIVA_USER`, `CLASSEVIVA_PASSWORD`, `GOOGLE_ACCESS_TOKEN`, `CLASSROOM_ICAL_URL`), rimuovile anche dalla shell o dalla configurazione del client: `logout` non le tocca.
 
 Prima di un uso condiviso servono comunque autorizzazioni per chiamante e isolamento multiutente: la modalità read-only non sostituisce questi controlli.
 
@@ -242,4 +259,4 @@ Questo progetto è stato reso possibile anche grazie al lavoro della community o
 
 ## Disclaimer (MIT License)
 
-Progetto open-source indipendente, **non affiliato** a Gruppo Spaggiari Parma S.p.A. né a Google LLC. Il software è fornito *"AS IS"* senza alcuna garanzia (vedi [LICENSE](LICENSE)). L'utente è l'unico responsabile del rispetto dei Termini di Servizio della propria scuola e dei provider AI scelti.
+Progetto open-source indipendente, **non affiliato** a Gruppo Spaggiari Parma S.p.A. né a Google LLC. Il software è fornito *"AS IS"* senza alcuna garanzia (vedi [LICENSE](LICENSE) e [NOTICE.md](NOTICE.md)). L'utente è l'unico responsabile del rispetto dei Termini di Servizio della propria scuola e dei provider AI scelti.

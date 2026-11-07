@@ -63,7 +63,8 @@ else:
         "2. Sei TU (l'AI) a interpretare il significato delle sigle della scuola dello studente (es. '5AI' = 5A Informatica, "
         "'5AC' = Chimica, '5AM' = Meccanica, '5AL' = Logistica). Quando apri una circolare o un tabellone orario lungo "
         "con `read_notice_pdf`, passa in `filter_keyword` i termini separati da virgola adatti a quella scuola "
-        "(es. `filter_keyword='5AI, Informatica'`).\n"
+        "(es. `filter_keyword='5AI, Informatica'`). Se la circolare è nuova, chiedi conferma allo studente "
+        "prima di usare `allow_mark_as_read=True`, perché l'apertura la segna come letta sul registro.\n"
         "3. Se l'utente ti spiega la sua classe, il significato delle sigle del suo istituto, il numero sul registro o un "
         "nuovo orario scolastico, salvali subito con `update_student_context` o `save_class_timetable`.\n"
         "4. Il link segreto .ics di Google Classroom NON va incollato nella chat: l'utente deve eseguire "
@@ -509,7 +510,7 @@ async def read_notice_pdf(
     attachment_index: int | None = None,
     filter_keyword: str = "",
     save_pdf: bool = True,
-    allow_mark_as_read: bool = True,
+    allow_mark_as_read: bool = False,
 ) -> dict[str, Any]:
     """Scarica ed estrae il testo di una circolare e dei suoi allegati (.pdf, .docx, .xlsx, .zip) dalla bacheca:
     - Se `filter_keyword` è specificato (o se è salvata la classe dello studente in `student_context.json`, es. '5AI'),
@@ -519,8 +520,9 @@ async def read_notice_pdf(
       le pagine a 150 DPI in immagini PNG (`rendered_page_images`) così l'agent può leggerle tramite Vision.
     - `attachment_index` (0-based) permette di selezionare un singolo allegato se la circolare ne ha più d'uno.
     - ATTENZIONE: Spaggiari restituisce testo e allegati completi solo dopo aver segnato la circolare come letta.
-      Se la circolare è nuova e `allow_mark_as_read=False`, il tool restituisce solo i metadati senza modificare
-      lo stato remoto. In modalità read-only `allow_mark_as_read` viene forzato a False.
+      Il default è `allow_mark_as_read=False`: se la circolare è nuova il tool restituisce solo i metadati senza
+      modificare lo stato remoto. Passa `allow_mark_as_read=True` solo dopo aver avvisato lo studente.
+      In modalità read-only il valore viene forzato a False.
     """
     ctx = _store.load_student_context()
     effective_filter = filter_keyword.strip() or ctx.school_class
@@ -531,6 +533,7 @@ async def read_notice_pdf(
         event_code=event_code.strip() or "CF",
         pub_id=str(notice_id).strip(),
         attach_num=attach_num,
+        attachment_index=attachment_index,
         allow_mark_as_read=effective_allow,
     )
 
@@ -564,9 +567,6 @@ async def read_notice_pdf(
     attachments: list[dict[str, Any]] = raw.get("attachments") or []
     if not attachments and raw.get("pdf_bytes"):
         attachments = [{"attach_num": attach_num or 1, "file_name": "", "bytes": raw["pdf_bytes"]}]
-
-    if attachment_index is not None and 0 <= attachment_index < len(attachments):
-        attachments = [attachments[attachment_index]]
 
     extracted_parts: list[str] = []
     if raw.get("text_body"):
@@ -639,7 +639,7 @@ def setup() -> str:
         "2) Chiedimi (se non te l'ho già scritto qui) la mia classe/sezione (es. 5AI), l'indirizzo di studio e il mio numero sul registro, "
         "e salvali con `update_student_context`.\n"
         "3) Cerca con `list_notices(query='orario')` l'ultima circolare dell'orario, estraila filtrando per la mia classe con `read_notice_pdf`, "
-        "e salva il mio orario settimanale con `save_class_timetable`.\n"
+        "chiedendomi conferma prima di usare `allow_mark_as_read=True`, e salva il mio orario settimanale con `save_class_timetable`.\n"
         "4) Per il link segreto .ics di Google Classroom, ricordami di eseguire `classeviva-mcp set-classroom-url` nel terminale."
     )
 

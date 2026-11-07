@@ -28,6 +28,23 @@ NOTICE_PAYLOAD = {
     ]
 }
 
+MULTI_ATTACHMENT_PAYLOAD = {
+    "items": [
+        {
+            "pubId": 245,
+            "evtCode": "CF",
+            "cntTitle": "Circolare con tre allegati",
+            "pubDT": "2026-11-06T11:00:00",
+            "readStatus": True,
+            "attachments": [
+                {"attachNum": 1, "fileName": "a.pdf"},
+                {"attachNum": 2, "fileName": "b.pdf"},
+                {"attachNum": 3, "fileName": "c.pdf"},
+            ],
+        }
+    ]
+}
+
 
 def _store(tmp_path: Path) -> CredentialStore:
     return CredentialStore(fallback_dir=tmp_path, allow_insecure_plaintext=True)
@@ -131,6 +148,76 @@ async def test_attachment_size_cap_is_enforced(
         with pytest.raises(ClasseVivaError, match="troppo grande"):
             await client._download_attachment("CF", "245", 1)
     assert MAX_ATTACHMENT_BYTES == 20 * 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_unread_notice_defaults_to_no_mark_as_read(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(f"{request.method} {request.url.path}")
+        if request.url.path.endswith("/noticeboard"):
+            return httpx.Response(200, json=NOTICE_PAYLOAD)
+        raise AssertionError(f"Chiamata inattesa: {request.method} {request.url}")
+
+    client, http_client = _client(tmp_path, handler)
+    async with http_client:
+        result = await client.read_notice_content(event_code="CF", pub_id="245")
+
+    assert result["skipped"] is True
+    assert result["marked_as_read"] is False
+    assert not any("/noticeboard/read/" in call for call in calls)
+    assert not any("/noticeboard/attach/" in call for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_attachment_index_downloads_only_selected_attachment(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        if request.url.path.endswith("/noticeboard"):
+            return httpx.Response(200, json=MULTI_ATTACHMENT_PAYLOAD)
+        if "/noticeboard/read/" in request.url.path:
+            return httpx.Response(200, json={"item": {"cntText": "Testo"}})
+        if "/noticeboard/attach/" in request.url.path:
+            return httpx.Response(200, content=b"%PDF-1.4 allegato")
+        raise AssertionError(f"Chiamata inattesa: {request.method} {request.url}")
+
+    client, http_client = _client(tmp_path, handler)
+    async with http_client:
+        result = await client.read_notice_content(
+            event_code="CF", pub_id="245", attachment_index=1
+        )
+
+    attach_calls = [c for c in calls if "/noticeboard/attach/" in c]
+    assert len(attach_calls) == 1
+    assert attach_calls[0].endswith("/2")
+    assert len(result["attachments"]) == 1
+    assert result["attachments"][0]["attach_num"] == 2
+
+
+@pytest.mark.asyncio
+async def test_total_attachment_budget_is_enforced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(client_module, "MAX_NOTICE_TOTAL_BYTES", 10)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/noticeboard"):
+            return httpx.Response(200, json=MULTI_ATTACHMENT_PAYLOAD)
+        if "/noticeboard/read/" in request.url.path:
+            return httpx.Response(200, json={"item": {"cntText": "Testo"}})
+        if "/noticeboard/attach/" in request.url.path:
+            return httpx.Response(200, content=b"x" * 8)
+        raise AssertionError(f"Chiamata inattesa: {request.method} {request.url}")
+
+    client, http_client = _client(tmp_path, handler)
+    async with http_client:
+        result = await client.read_notice_content(event_code="CF", pub_id="245")
+
+    assert len(result["attachments"]) == 1
+    assert len(result["attachments"][0]["bytes"]) == 8
 
 
 @pytest.mark.asyncio

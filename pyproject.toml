@@ -4,16 +4,16 @@ build-backend = "hatchling.build"
 
 [project]
 name = "classeviva-mcp"
-version = "1.1.1"
+version = "1.1.2"
 description = "Server MCP (Model Context Protocol) per il registro elettronico Spaggiari ClasseViva e Google Classroom iCal"
 readme = "README.md"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "NOTICE.md"]
 requires-python = ">=3.11"
 authors = [{ name = "classeviva-mcp contributors" }]
 keywords = ["mcp", "classeviva", "spaggiari", "scuola", "google-classroom", "model-context-protocol"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: End Users/Desktop",
     "License :: OSI Approved :: MIT License",

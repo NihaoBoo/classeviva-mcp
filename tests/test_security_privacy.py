@@ -49,7 +49,8 @@ class FakeClient:
         pub_id: str,
         attach_num: int | None = None,
         *,
-        allow_mark_as_read: bool = True,
+        attachment_index: int | None = None,
+        allow_mark_as_read: bool = False,
     ) -> dict[str, Any]:
         return {
             "text_body": "Titolo",

@@ -25,7 +25,8 @@ DEFAULT_HEADERS = {
     "Z-Dev-Apikey": "Tg1NWEwNGIgIC0K",
     "Content-Type": "application/json",
 }
-MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024  # 20 MB
+MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024  # 20 MB per attachment
+MAX_NOTICE_TOTAL_BYTES = 40 * 1024 * 1024  # 40 MB across all attachments of one notice
 ALLOWED_ATTACHMENT_HOSTS = ("cdndoc.spaggiari.eu",)
 
 logger = logging.getLogger(__name__)
@@ -217,8 +218,20 @@ class SpaggiariClient:
         host = (host or "").lower().rstrip(".")
         return host in ALLOWED_ATTACHMENT_HOSTS or host.endswith(".spaggiari.eu")
 
-    async def _download_attachment(self, event_code: str, pub_id: str, num: int) -> bytes:
-        """Downloads an attachment, following the signed CDN redirect without auth headers."""
+    async def _download_attachment(
+        self,
+        event_code: str,
+        pub_id: str,
+        num: int,
+        *,
+        max_bytes: int | None = None,
+    ) -> bytes:
+        """Downloads an attachment while streaming, with a hard byte cap.
+
+        The response is never buffered in full before the limit is applied.
+        """
+        if max_bytes is None:
+            max_bytes = MAX_ATTACHMENT_BYTES
         url = (
             f"{BASE_URL}/students/{self._student_id}/noticeboard/attach/"
             f"{event_code}/{pub_id}/{num}"
@@ -228,36 +241,39 @@ class SpaggiariClient:
         headers["Z-Auth-Token"] = self._token
 
         if self._external_client is not None:
-            response = await self._external_client.get(url, headers=headers)
-        else:
-            async with httpx.AsyncClient(
-                timeout=25.0, follow_redirects=False, trust_env=False
-            ) as client:
-                response = await client.get(url, headers=headers)
+            return await self._download_attachment_with_client(
+                self._external_client, url, headers, max_bytes
+            )
+        async with httpx.AsyncClient(
+            timeout=25.0, follow_redirects=False, trust_env=False
+        ) as client:
+            return await self._download_attachment_with_client(client, url, headers, max_bytes)
 
-        if response.status_code in (301, 302, 303, 307, 308):
-            location = response.headers.get("location", "")
-            if not location:
-                raise ClasseVivaError("Redirect allegato senza header Location.")
-            target = urljoin(url, location)
-            parsed = urlparse(target)
-            if parsed.scheme != "https" or not self._is_allowed_attachment_host(
-                parsed.hostname or ""
-            ):
-                raise ClasseVivaError("Redirect allegato verso host non consentito.")
-            # The signed CDN URL must be fetched without Spaggiari auth headers.
-            if self._external_client is not None:
-                cdn_response = await self._external_client.get(target, headers={})
-            else:
-                async with httpx.AsyncClient(
-                    timeout=25.0, follow_redirects=False, trust_env=False
-                ) as clean_client:
-                    cdn_response = await clean_client.get(target, headers={})
-            cdn_response.raise_for_status()
-            return await self._read_limited(cdn_response, MAX_ATTACHMENT_BYTES)
+    async def _download_attachment_with_client(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        headers: dict[str, str],
+        max_bytes: int,
+    ) -> bytes:
+        async with client.stream("GET", url, headers=headers) as response:
+            if response.status_code in (301, 302, 303, 307, 308):
+                location = response.headers.get("location", "")
+                if not location:
+                    raise ClasseVivaError("Redirect allegato senza header Location.")
+                target = urljoin(url, location)
+                parsed = urlparse(target)
+                if parsed.scheme != "https" or not self._is_allowed_attachment_host(
+                    parsed.hostname or ""
+                ):
+                    raise ClasseVivaError("Redirect allegato verso host non consentito.")
+                # The signed CDN URL must be fetched without Spaggiari auth headers.
+                async with client.stream("GET", target, headers={}) as cdn_response:
+                    cdn_response.raise_for_status()
+                    return await self._read_limited(cdn_response, max_bytes)
 
-        response.raise_for_status()
-        return await self._read_limited(response, MAX_ATTACHMENT_BYTES)
+            response.raise_for_status()
+            return await self._read_limited(response, max_bytes)
 
     async def get_profile(self) -> StudentProfile:
         """Returns student & school profile details from /students/{id}/cards."""
@@ -492,7 +508,8 @@ class SpaggiariClient:
         pub_id: str,
         attach_num: int | None = None,
         *,
-        allow_mark_as_read: bool = True,
+        attachment_index: int | None = None,
+        allow_mark_as_read: bool = False,
     ) -> dict[str, Any]:
         """Reads notice text and downloads attachments.
 
@@ -500,6 +517,9 @@ class SpaggiariClient:
         after the read endpoint is called. If the notice is unread and
         ``allow_mark_as_read`` is False, this method returns metadata only and
         never changes the remote read status.
+
+        ``attachment_index`` is the 0-based index into the sorted attachment list;
+        when set, only that attachment is downloaded.
         """
         text_body = ""
         notice_title = ""
@@ -557,15 +577,32 @@ class SpaggiariClient:
                 (int(a.get("attachNum", 1)), str(a.get("fileName", "")))
                 for a in sorted_meta
             ]
+            if attachment_index is not None:
+                if 0 <= attachment_index < len(nums_to_try):
+                    nums_to_try = [nums_to_try[attachment_index]]
+                else:
+                    nums_to_try = []
         elif found:
             nums_to_try = []
         else:
             nums_to_try = [(1, ""), (101, "")]
+            if attachment_index is not None and attachment_index != 0:
+                nums_to_try = []
 
         downloaded: list[dict[str, Any]] = []
+        total_bytes = 0
         for num, fname in nums_to_try:
+            remaining = MAX_NOTICE_TOTAL_BYTES - total_bytes
+            if remaining <= 0:
+                logger.warning("Limite totale allegati della circolare raggiunto.")
+                break
             try:
-                attachment_bytes = await self._download_attachment(event_code, pub_id, num)
+                attachment_bytes = await self._download_attachment(
+                    event_code,
+                    pub_id,
+                    num,
+                    max_bytes=min(MAX_ATTACHMENT_BYTES, remaining),
+                )
                 if attachment_bytes:
                     downloaded.append(
                         {
@@ -574,6 +611,7 @@ class SpaggiariClient:
                             "bytes": attachment_bytes,
                         }
                     )
+                    total_bytes += len(attachment_bytes)
             except Exception as exc:  # noqa: BLE001 - one bad attachment must not break the notice
                 logger.warning("Allegato non scaricato (%s): %s", num, type(exc).__name__)
                 continue
