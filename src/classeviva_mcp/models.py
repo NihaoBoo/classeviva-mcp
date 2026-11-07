@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
+
 from pydantic import BaseModel, Field
 
 ROME_TZ = ZoneInfo("Europe/Rome")
@@ -63,13 +64,55 @@ class StudentContext(BaseModel):
     register_number: int | None = Field(default=None, description="Numero di elenco sul registro di classe")
     custom_notes: str = Field(default="", description="Note aggiuntive o preferenze dello studente (max 1500 caratteri)")
     school_year: str = Field(default="", description="Anno scolastico in cui è stata salvata la classe (es. '2026/2027')")
-    classroom_ical_url: str = Field(default="", description="URL feed segreto .ics di Google Classroom")
     timetable: ClassTimetable | None = Field(default=None, description="Orario settimanale salvato in locale")
     seen_notice_ids: list[str] = Field(
         default_factory=list,
         description="Coda FIFO (max 200) degli ID circolari già visti, per segnalarli senza nasconderli",
     )
     updated_at: str = ""
+
+
+class ProfileOut(BaseModel):
+    """Profilo restituito all'agente in modalità personale (mai segreti)."""
+
+    ident: str = ""
+    student_id: str = ""
+    account_type: str = ""
+    first_name: str = ""
+    last_name: str = ""
+    school_class: str = ""
+    school_name: str = ""
+
+
+class PublicProfileOut(BaseModel):
+    """Profilo minimizzato per la modalità read-only."""
+
+    school_class: str = ""
+    school_name: str = ""
+
+
+class StudentContextOut(BaseModel):
+    """Contesto studente restituito in modalità personale, senza URL iCal."""
+
+    school_class: str = ""
+    course_name: str = ""
+    register_number: int | None = None
+    custom_notes: str = ""
+    school_year: str = ""
+    classroom_ical_configured: bool = False
+    timetable: ClassTimetable | None = None
+    seen_notice_ids: list[str] = Field(default_factory=list)
+    updated_at: str = ""
+
+
+class PublicStudentContextOut(BaseModel):
+    """Contesto studente minimizzato per la modalità read-only."""
+
+    school_class: str = ""
+    course_name: str = ""
+    school_year: str = ""
+    classroom_ical_configured: bool = False
+    timetable: ClassTimetable | None = None
 
 
 

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from typing import Any
+from urllib.parse import urljoin, urlparse
+
 import httpx
 
 from classeviva_mcp.credentials import CredentialStore
@@ -22,6 +25,10 @@ DEFAULT_HEADERS = {
     "Z-Dev-Apikey": "Tg1NWEwNGIgIC0K",
     "Content-Type": "application/json",
 }
+MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024  # 20 MB
+ALLOWED_ATTACHMENT_HOSTS = ("cdndoc.spaggiari.eu",)
+
+logger = logging.getLogger(__name__)
 
 
 class ClasseVivaError(Exception):
@@ -131,8 +138,6 @@ class SpaggiariClient:
                 "token": self._token,
                 "ident": self._ident,
                 "student_id": self._student_id,
-                "first_name": self._first_name,
-                "last_name": self._last_name,
             }
         )
 
@@ -166,8 +171,15 @@ class SpaggiariClient:
                 if self._external_client is not None:
                     resp = await self._external_client.request(method, url, headers=headers, **kwargs)
                 else:
-                    async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as client:
+                    async with httpx.AsyncClient(
+                        timeout=25.0, follow_redirects=False, trust_env=False
+                    ) as client:
                         resp = await client.request(method, url, headers=headers, **kwargs)
+
+                if 300 <= resp.status_code < 400:
+                    raise ClasseVivaError(
+                        "Redirect inatteso dall'API Spaggiari: richiesta interrotta per sicurezza."
+                    )
 
                 if resp.status_code in (401, 403) and attempt == 0:
                     await self.login()
@@ -181,6 +193,71 @@ class SpaggiariClient:
                 return resp
 
         raise ClasseVivaError(f"Richiesta fallita dopo 3 tentativi su {endpoint}")
+
+    @staticmethod
+    async def _read_limited(response: httpx.Response, max_bytes: int) -> bytes:
+        content_length = response.headers.get("content-length", "")
+        if content_length.isdigit() and int(content_length) > max_bytes:
+            raise ClasseVivaError(
+                f"Allegato troppo grande (limite {max_bytes // (1024 * 1024)} MB)."
+            )
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in response.aiter_bytes():
+            total += len(chunk)
+            if total > max_bytes:
+                raise ClasseVivaError(
+                    f"Allegato troppo grande (limite {max_bytes // (1024 * 1024)} MB)."
+                )
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    @staticmethod
+    def _is_allowed_attachment_host(host: str) -> bool:
+        host = (host or "").lower().rstrip(".")
+        return host in ALLOWED_ATTACHMENT_HOSTS or host.endswith(".spaggiari.eu")
+
+    async def _download_attachment(self, event_code: str, pub_id: str, num: int) -> bytes:
+        """Downloads an attachment, following the signed CDN redirect without auth headers."""
+        url = (
+            f"{BASE_URL}/students/{self._student_id}/noticeboard/attach/"
+            f"{event_code}/{pub_id}/{num}"
+        )
+        headers = dict(DEFAULT_HEADERS)
+        headers.pop("Content-Type", None)
+        headers["Z-Auth-Token"] = self._token
+
+        if self._external_client is not None:
+            response = await self._external_client.get(url, headers=headers)
+        else:
+            async with httpx.AsyncClient(
+                timeout=25.0, follow_redirects=False, trust_env=False
+            ) as client:
+                response = await client.get(url, headers=headers)
+
+        if response.status_code in (301, 302, 303, 307, 308):
+            location = response.headers.get("location", "")
+            if not location:
+                raise ClasseVivaError("Redirect allegato senza header Location.")
+            target = urljoin(url, location)
+            parsed = urlparse(target)
+            if parsed.scheme != "https" or not self._is_allowed_attachment_host(
+                parsed.hostname or ""
+            ):
+                raise ClasseVivaError("Redirect allegato verso host non consentito.")
+            # The signed CDN URL must be fetched without Spaggiari auth headers.
+            if self._external_client is not None:
+                cdn_response = await self._external_client.get(target, headers={})
+            else:
+                async with httpx.AsyncClient(
+                    timeout=25.0, follow_redirects=False, trust_env=False
+                ) as clean_client:
+                    cdn_response = await clean_client.get(target, headers={})
+            cdn_response.raise_for_status()
+            return await self._read_limited(cdn_response, MAX_ATTACHMENT_BYTES)
+
+        response.raise_for_status()
+        return await self._read_limited(response, MAX_ATTACHMENT_BYTES)
 
     async def get_profile(self) -> StudentProfile:
         """Returns student & school profile details from /students/{id}/cards."""
@@ -252,7 +329,7 @@ class SpaggiariClient:
                     kind=kind,
                     subject=subject,
                     title=notes[:100] if notes else f"{kind.title()} {subject}",
-                    description=notes,
+                    description=notes[:4000],
                     date=date_str,
                     author=author,
                 )
@@ -277,7 +354,7 @@ class SpaggiariClient:
             subj = (ls.get("subjectDesc") or "Materia").strip().title()
             if subject_filter and subject_filter.lower() not in subj.lower():
                 continue
-            topic = (ls.get("lessonArg") or ls.get("lessonType") or "").strip()
+            topic = (ls.get("lessonArg") or ls.get("lessonType") or "").strip()[:4000]
             results.append(
                 LessonItem(
                     id=str(ls.get("evtId", "")),
@@ -366,7 +443,12 @@ class SpaggiariClient:
                 continue
 
             attachments = it.get("attachments") or []
-            attach_nums = [int(a.get("attachNum", 101)) for a in attachments if a.get("attachNum")]
+            attach_nums: list[int] = []
+            for attachment in attachments:
+                try:
+                    attach_nums.append(int(attachment.get("attachNum", 101)))
+                except (TypeError, ValueError):
+                    attach_nums.append(101)
             attach_names = [str(a.get("fileName", "")) for a in attachments if a.get("fileName")]
 
             results.append(
@@ -409,12 +491,46 @@ class SpaggiariClient:
         event_code: str,
         pub_id: str,
         attach_num: int | None = None,
+        *,
+        allow_mark_as_read: bool = True,
     ) -> dict[str, Any]:
-        """Reads notice text and downloads all attachments (PDF/DOCX) if present.
-        Note: Calling Spaggiari's read endpoint may mark the circular as read.
+        """Reads notice text and downloads attachments.
+
+        Spaggiari only returns the full ``cntText`` and allows attachment downloads
+        after the read endpoint is called. If the notice is unread and
+        ``allow_mark_as_read`` is False, this method returns metadata only and
+        never changes the remote read status.
         """
         text_body = ""
+        notice_title = ""
         attachments_meta: list[dict[str, Any]] = []
+        was_unread = False
+        found = False
+
+        try:
+            nb_resp = await self._request("GET", "/students/{student_id}/noticeboard")
+            for it in nb_resp.json().get("items") or []:
+                if str(it.get("pubId") or it.get("evtId")) == str(pub_id):
+                    found = True
+                    attachments_meta = it.get("attachments") or []
+                    notice_title = str(it.get("cntTitle") or "").strip()
+                    was_unread = not bool(it.get("readStatus", False))
+                    break
+        except Exception:
+            pass
+
+        if was_unread and not allow_mark_as_read:
+            return {
+                "text_body": notice_title,
+                "notice_title": notice_title,
+                "pdf_bytes": b"",
+                "attachments": [],
+                "marked_as_read": False,
+                "was_unread": True,
+                "skipped": True,
+            }
+
+        marked_as_read = False
         try:
             read_resp = await self._request(
                 "POST",
@@ -422,19 +538,12 @@ class SpaggiariClient:
             )
             item_data = read_resp.json().get("item") or {}
             text_body = str(item_data.get("cntText") or item_data.get("title") or "").strip()
+            marked_as_read = was_unread
         except Exception:
             pass
 
-        try:
-            nb_resp = await self._request("GET", "/students/{student_id}/noticeboard")
-            for it in nb_resp.json().get("items") or []:
-                if str(it.get("pubId") or it.get("evtId")) == str(pub_id):
-                    attachments_meta = it.get("attachments") or []
-                    if not text_body:
-                        text_body = str(it.get("cntTitle") or "").strip()
-                    break
-        except Exception:
-            pass
+        if not text_body:
+            text_body = notice_title
 
         if attach_num is not None:
             nums_to_try = [(attach_num, "")]
@@ -444,32 +553,38 @@ class SpaggiariClient:
                 attachments_meta,
                 key=lambda a: (0 if str(a.get("fileName", "")).lower().endswith(".pdf") else 1),
             )
-            nums_to_try = [(int(a.get("attachNum", 1)), str(a.get("fileName", ""))) for a in sorted_meta]
+            nums_to_try = [
+                (int(a.get("attachNum", 1)), str(a.get("fileName", "")))
+                for a in sorted_meta
+            ]
+        elif found:
+            nums_to_try = []
         else:
             nums_to_try = [(1, ""), (101, "")]
 
         downloaded: list[dict[str, Any]] = []
         for num, fname in nums_to_try:
             try:
-                attach_resp = await self._request(
-                    "GET",
-                    f"/students/{{student_id}}/noticeboard/attach/{event_code}/{pub_id}/{num}",
-                    accept_binary=True,
-                )
-                if attach_resp.content:
+                attachment_bytes = await self._download_attachment(event_code, pub_id, num)
+                if attachment_bytes:
                     downloaded.append(
                         {
                             "attach_num": num,
                             "file_name": fname,
-                            "bytes": attach_resp.content,
+                            "bytes": attachment_bytes,
                         }
                     )
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - one bad attachment must not break the notice
+                logger.warning("Allegato non scaricato (%s): %s", num, type(exc).__name__)
                 continue
 
         primary_bytes = downloaded[0]["bytes"] if downloaded else b""
         return {
             "text_body": text_body,
+            "notice_title": notice_title,
             "pdf_bytes": primary_bytes,
             "attachments": downloaded,
+            "marked_as_read": marked_as_read,
+            "was_unread": was_unread,
+            "skipped": False,
         }

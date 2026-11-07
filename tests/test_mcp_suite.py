@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+
 import httpx
 import openpyxl
 import pymupdf
@@ -295,15 +296,15 @@ async def test_all_mcp_tools_student_context_scanned_pdf_and_zero_stdout_leak(
         client = SpaggiariClient(store=store, http_client=http_client)
         set_client_for_testing(client, store)
 
-        # Save persistent student context & timetable
+        # Save persistent student context & timetable. The iCal URL is no longer accepted
+        # by the MCP tool: it must be configured via CLI and never pass through the LLM.
         await update_student_context(
             school_class="5AI",
             course_name="Informatica",
             register_number=14,
             custom_notes="5AI = Informatica, 5AC = Chimica, 5AM = Meccanica, 5AL = Logistica",
-            classroom_ical_url="https://calendar.google.com/calendar/ical/test/basic.ics",
         )
-        assert store.load_student_context().classroom_ical_url == "https://calendar.google.com/calendar/ical/test/basic.ics"
+        assert not hasattr(store.load_student_context(), "classroom_ical_url")
 
         tt_res = await save_class_timetable(
             school_class="5AI",

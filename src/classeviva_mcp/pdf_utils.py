@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import io
+import os
 import re
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
+
 import openpyxl
 import pymupdf
 
@@ -18,6 +20,13 @@ ROMAN_BY_DIGIT = {
 
 MAX_ZIP_FILES = 15
 MAX_ZIP_UNCOMPRESSED_BYTES = 25 * 1024 * 1024  # 25 MB guard against zip bombs
+MAX_FILE_BYTES = 20 * 1024 * 1024  # 20 MB per attachment
+MAX_XML_BYTES = 10 * 1024 * 1024  # 10 MB for word/document.xml
+MAX_PDF_PAGES = 50
+MAX_XLSX_ROWS = 500
+MAX_XLSX_COLS = 50
+MAX_XLSX_SHEETS = 20
+MAX_ZIP_DEPTH = 1
 
 
 def build_class_regex(filter_query: str) -> re.Pattern[str] | None:
@@ -44,6 +53,10 @@ def build_class_regex(filter_query: str) -> re.Pattern[str] | None:
     return re.compile("|".join(patterns), re.IGNORECASE)
 
 
+def _zip_total_uncompressed(zf: zipfile.ZipFile) -> int:
+    return sum(info.file_size for info in zf.infolist() if not info.is_dir())
+
+
 def extract_pdf_text(
     pdf_bytes: bytes,
     filter_keyword: str = "",
@@ -56,12 +69,16 @@ def extract_pdf_text(
     """
     if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
         return "", 0, []
+    if len(pdf_bytes) > MAX_FILE_BYTES:
+        return "", 0, []
 
     rx = build_class_regex(filter_keyword) if filter_keyword.strip() else None
     all_pages: list[tuple[int, str]] = []
     with pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc:
         total_pages = len(doc)
         for idx, page in enumerate(doc):
+            if idx >= MAX_PDF_PAGES:
+                break
             all_pages.append((idx + 1, page.get_text("text").strip()))
 
     if rx is not None and total_pages > 2:
@@ -80,6 +97,8 @@ def extract_pdf_text(
 
     included_nums = [pno for pno, _ in selected]
     formatted = [f"[Pagina {pno}/{total_pages}]\n{txt}" for pno, txt in selected if txt]
+    if total_pages > MAX_PDF_PAGES:
+        formatted.append(f"[Limite di {MAX_PDF_PAGES} pagine raggiunto su {total_pages}]")
     joined = "\n\n".join(formatted).strip()
     if max_chars > 0 and len(joined) > max_chars:
         joined = joined[:max_chars] + f"\n... [Troncato a {max_chars} caratteri per risparmiare token]"
@@ -98,7 +117,9 @@ def render_scanned_pdf_pages(
     """
     if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
         return []
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if len(pdf_bytes) > MAX_FILE_BYTES:
+        return []
+    output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     safe_id = "".join(c for c in str(notice_id) if c.isalnum() or c in ("-", "_"))
     saved_images: list[str] = []
 
@@ -117,9 +138,16 @@ def extract_docx_text(docx_bytes: bytes, filter_keyword: str = "") -> str:
     """Extracts text from a Word .docx attachment using Python stdlib."""
     if not docx_bytes or not docx_bytes.startswith(b"PK"):
         return ""
+    if len(docx_bytes) > MAX_FILE_BYTES:
+        return ""
     try:
         with zipfile.ZipFile(io.BytesIO(docx_bytes)) as zf:
             if "word/document.xml" not in zf.namelist():
+                return ""
+            if _zip_total_uncompressed(zf) > MAX_ZIP_UNCOMPRESSED_BYTES:
+                return ""
+            info = zf.getinfo("word/document.xml")
+            if info.file_size > MAX_XML_BYTES:
                 return ""
             xml_content = zf.read("word/document.xml")
         root = ET.fromstring(xml_content)
@@ -148,7 +176,12 @@ def extract_xlsx_text(xlsx_bytes: bytes, filter_keyword: str = "") -> str:
     """
     if not xlsx_bytes or not xlsx_bytes.startswith(b"PK"):
         return ""
+    if len(xlsx_bytes) > MAX_FILE_BYTES:
+        return ""
     try:
+        with zipfile.ZipFile(io.BytesIO(xlsx_bytes)) as zf:
+            if _zip_total_uncompressed(zf) > MAX_ZIP_UNCOMPRESSED_BYTES:
+                return ""
         wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes), data_only=True)
     except Exception:
         return ""
@@ -156,20 +189,27 @@ def extract_xlsx_text(xlsx_bytes: bytes, filter_keyword: str = "") -> str:
     rx = build_class_regex(filter_keyword) if filter_keyword.strip() else None
     sheets_output: list[str] = []
 
-    for sheet_name in wb.sheetnames:
+    for sheet_name in wb.sheetnames[:MAX_XLSX_SHEETS]:
         ws = wb[sheet_name]
         # 1. Unmerge cells and fill every cell in the range with the top-left value
-        merged_ranges = list(ws.merged_cells.ranges)
+        merged_ranges = list(ws.merged_cells.ranges)[:100]
         for m_range in merged_ranges:
+            if m_range.max_row > MAX_XLSX_ROWS or m_range.max_col > MAX_XLSX_COLS:
+                continue
             top_val = ws.cell(m_range.min_row, m_range.min_col).value
             ws.unmerge_cells(str(m_range))
             if top_val is not None:
-                for r in range(m_range.min_row, m_range.max_row + 1):
-                    for c in range(m_range.min_col, m_range.max_col + 1):
-                        ws.cell(r, c).value = top_val
+                for row_idx in range(m_range.min_row, m_range.max_row + 1):
+                    for col_idx in range(m_range.min_col, m_range.max_col + 1):
+                        ws.cell(row_idx, col_idx).value = top_val
 
         rows: list[list[str]] = []
-        for row in ws.iter_rows(values_only=True):
+        for row in ws.iter_rows(
+            min_row=1,
+            max_row=MAX_XLSX_ROWS,
+            max_col=MAX_XLSX_COLS,
+            values_only=True,
+        ):
             str_row = [str(cell).strip() if cell is not None else "" for cell in row]
             if any(str_row):
                 rows.append(str_row)
@@ -189,8 +229,8 @@ def extract_xlsx_text(xlsx_bytes: bytes, filter_keyword: str = "") -> str:
             # Always keep leading context columns (e.g. Day / Hour in col 0 and 1) + matched class columns
             keep_cols = sorted({0, 1} | matched_cols)
             col_lines: list[str] = [f"[Foglio Excel: {sheet_name} — Estrazione Verticale Colonna {filter_keyword}]"]
-            for r in rows:
-                picked = [r[c] for c in keep_cols if c < len(r)]
+            for row in rows:
+                picked = [row[c] for c in keep_cols if c < len(row)]
                 if any(picked):
                     col_lines.append(" | ".join(picked))
             sheets_output.append("\n".join(col_lines))
@@ -207,8 +247,8 @@ def extract_xlsx_text(xlsx_bytes: bytes, filter_keyword: str = "") -> str:
 
         # 4. Full sheet fallback
         all_lines = [f"[Foglio Excel: {sheet_name}]"]
-        for r in rows[:120]:
-            all_lines.append(" | ".join(c for c in r if c))
+        for row in rows[:120]:
+            all_lines.append(" | ".join(c for c in row if c))
         sheets_output.append("\n".join(all_lines))
 
     return "\n\n".join(sheets_output).strip()
@@ -218,10 +258,14 @@ def extract_attachment_text(
     raw_bytes: bytes,
     file_name: str = "",
     filter_keyword: str = "",
+    *,
+    depth: int = 0,
 ) -> str:
     """Auto-detects PDF, DOCX, XLSX, CSV/TXT, or ZIP (with zip-bomb protection) and extracts text."""
     if not raw_bytes:
         return ""
+    if len(raw_bytes) > MAX_FILE_BYTES:
+        return f"[Allegato non elaborato: supera il limite di {MAX_FILE_BYTES // (1024 * 1024)} MB]"
     fname_low = (file_name or "").lower()
 
     if raw_bytes.startswith(b"%PDF") or fname_low.endswith(".pdf"):
@@ -232,10 +276,15 @@ def extract_attachment_text(
         try:
             with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
                 names = zf.namelist()
+                if _zip_total_uncompressed(zf) > MAX_ZIP_UNCOMPRESSED_BYTES:
+                    return "[Allegato non elaborato: archivio ZIP oltre il limite decompresso]"
                 if "word/document.xml" in names or fname_low.endswith(".docx"):
                     return extract_docx_text(raw_bytes, filter_keyword=filter_keyword)
                 if any(n.startswith("xl/") for n in names) or fname_low.endswith(".xlsx"):
                     return extract_xlsx_text(raw_bytes, filter_keyword=filter_keyword)
+
+                if depth >= MAX_ZIP_DEPTH:
+                    return "[Archivio ZIP annidato ignorato per sicurezza]"
 
                 # Generic .zip archive with zip-bomb guard
                 extracted_chunks: list[str] = []
@@ -247,8 +296,16 @@ def extract_attachment_text(
                     if total_uncompressed > MAX_ZIP_UNCOMPRESSED_BYTES:
                         extracted_chunks.append("[Avviso: Limite 25MB archivio ZIP raggiunto]")
                         break
+                    if info.file_size > MAX_FILE_BYTES:
+                        extracted_chunks.append(f"[File ZIP ignorato: {info.filename} troppo grande]")
+                        continue
                     sub_bytes = zf.read(info.filename)
-                    sub_txt = extract_attachment_text(sub_bytes, file_name=info.filename, filter_keyword=filter_keyword)
+                    sub_txt = extract_attachment_text(
+                        sub_bytes,
+                        file_name=info.filename,
+                        filter_keyword=filter_keyword,
+                        depth=depth + 1,
+                    )
                     if sub_txt:
                         extracted_chunks.append(f"=== File in ZIP: {info.filename} ===\n{sub_txt}")
                 return "\n\n".join(extracted_chunks).strip()
@@ -273,6 +330,16 @@ def _prune_attachments_dir(output_dir: Path, max_files: int = 30) -> None:
         pass
 
 
+def _write_private_bytes(target: Path, raw_bytes: bytes) -> None:
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(raw_bytes)
+    try:
+        os.chmod(target, 0o600)
+    except OSError:
+        pass
+
+
 def save_attachment_file(
     raw_bytes: bytes,
     notice_id: str,
@@ -280,7 +347,7 @@ def save_attachment_file(
     file_name: str = "",
 ) -> Path:
     """Saves a downloaded circular attachment (.pdf / .docx / .xlsx) to disk with automatic cache rotation."""
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     safe_id = "".join(c for c in str(notice_id) if c.isalnum() or c in ("-", "_"))
     if file_name:
         clean_name = re.sub(r'[<>:"/\\|?*]', "_", file_name).strip()
@@ -288,10 +355,9 @@ def save_attachment_file(
     else:
         ext = ".pdf" if raw_bytes.startswith(b"%PDF") else (".docx" if raw_bytes.startswith(b"PK") else ".bin")
         target = output_dir / f"circolare_{safe_id}{ext}"
-    target.write_bytes(raw_bytes)
+    _write_private_bytes(target, raw_bytes)
     _prune_attachments_dir(output_dir)
     return target
-
 
 
 save_pdf_attachment = save_attachment_file

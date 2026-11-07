@@ -1,0 +1,34 @@
+---
+name: Bug report
+about: Segnala un comportamento errato (senza dati personali)
+title: "[Bug] "
+labels: bug
+assignees: ""
+---
+
+## Descrizione
+
+<!-- Cosa succede e cosa ti aspettavi. -->
+
+## Ambiente
+
+- Versione `classeviva-mcp` (`classeviva-mcp --version`):
+- Sistema operativo:
+- Client MCP (Claude Desktop / Cursor / Opencode / altro):
+- Python:
+
+## Passi per riprodurre
+
+1.
+2.
+3.
+
+## Output / log
+
+<!-- Rimuovi nome, cognome, identificativi, token, URL .ics e dati di studenti. -->
+
+## Checklist
+
+- [ ] Ho rimosso credenziali, token e dati personali dal report.
+- [ ] Non si tratta di una vulnerabilità di sicurezza (in tal caso uso
+      Security Advisory).

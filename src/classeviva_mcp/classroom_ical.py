@@ -1,13 +1,88 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
+import logging
+import socket
 from datetime import date, datetime
+from urllib.parse import urljoin, urlparse
+
 import httpx
 from icalendar import Calendar
 
-from classeviva_mcp.models import AgendaItem, ROME_TZ
+from classeviva_mcp.models import ROME_TZ, AgendaItem
+
+logger = logging.getLogger(__name__)
 
 CLASSROOM_API_BASE = "https://classroom.googleapis.com/v1"
+ALLOWED_ICAL_HOSTS = frozenset({"calendar.google.com", "classroom.google.com"})
+MAX_ICAL_BYTES = 5 * 1024 * 1024  # 5 MB
+MAX_REDIRECTS = 3
+MAX_FIELD_CHARS = 4000
+
+
+def _is_public_ip(ip_str: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return bool(ip.is_global and not ip.is_multicast)
+
+
+def validate_ical_url(url: str) -> str:
+    """Validate an iCal URL against a strict Google-only allowlist.
+
+    Rejects non-HTTPS schemes, credentials in the URL, non-standard ports,
+    non-allowlisted hosts, and hosts resolving to private/reserved addresses.
+    """
+    clean = (url or "").strip()
+    if not clean:
+        raise ValueError("URL iCal vuoto.")
+    if clean.startswith("webcal://"):
+        clean = "https://" + clean[len("webcal://") :]
+
+    parsed = urlparse(clean)
+    if parsed.scheme != "https":
+        raise ValueError("Schema URL non consentito: è ammesso solo https.")
+    if parsed.username or parsed.password:
+        raise ValueError("URL iCal non valido: credenziali nell'URL non consentite.")
+    host = (parsed.hostname or "").rstrip(".").lower()
+    if host not in ALLOWED_ICAL_HOSTS:
+        raise ValueError(
+            "Host iCal non consentito. Sono ammessi solo: "
+            + ", ".join(sorted(ALLOWED_ICAL_HOSTS))
+        )
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Porta URL iCal non valida.") from exc
+    if port not in (None, 443):
+        raise ValueError("Porta URL iCal non consentita: è ammessa solo la 443.")
+
+    try:
+        infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError("Impossibile risolvere il dominio del feed iCal.") from exc
+    for info in infos:
+        ip = str(info[4][0])
+        if not _is_public_ip(ip):
+            raise ValueError("Il feed iCal risolve verso un indirizzo privato o riservato.")
+
+    return clean
+
+
+async def _read_limited(response: httpx.Response, max_bytes: int) -> bytes:
+    content_length = response.headers.get("content-length", "")
+    if content_length.isdigit() and int(content_length) > max_bytes:
+        raise ValueError(f"Risposta troppo grande (limite {max_bytes // (1024 * 1024)} MB).")
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in response.aiter_bytes():
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError(f"Risposta troppo grande (limite {max_bytes // (1024 * 1024)} MB).")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 async def fetch_classroom_tasks(
@@ -17,8 +92,8 @@ async def fetch_classroom_tasks(
     end_date: str | None = None,
 ) -> list[AgendaItem]:
     """Dual-mode Google Classroom fetcher:
-    1. If `google_access_token` (OAuth2) is provided and allowed by school domain, queries Classroom API.
-    2. If `ical_url` (.ics secret link) is provided, fetches and parses VEVENT deadlines (bypasses domain admin blocks).
+    1. If `google_access_token` (OAuth2) is provided, queries the Classroom API.
+    2. If `ical_url` (.ics secret link) is provided, fetches and parses VEVENT deadlines.
     """
     results: list[AgendaItem] = []
     if google_access_token.strip():
@@ -29,8 +104,8 @@ async def fetch_classroom_tasks(
                 end_date=end_date,
             )
             results.extend(oauth_items)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - degraded mode, never leak token/URL
+            logger.warning("Classroom OAuth non disponibile: %s", type(exc).__name__)
 
     if ical_url.strip():
         try:
@@ -40,8 +115,8 @@ async def fetch_classroom_tasks(
                 end_date=end_date,
             )
             results.extend(ical_items)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - degraded mode, never leak token/URL
+            logger.warning("Classroom iCal non disponibile: %s", type(exc).__name__)
 
     return results
 
@@ -54,7 +129,7 @@ async def fetch_classroom_oauth_tasks(
     headers = {"Authorization": f"Bearer {access_token}"}
     items: list[AgendaItem] = []
 
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with httpx.AsyncClient(timeout=20.0, follow_redirects=False, trust_env=False) as client:
         c_resp = await client.get(
             f"{CLASSROOM_API_BASE}/courses",
             headers=headers,
@@ -86,10 +161,10 @@ async def fetch_classroom_oauth_tasks(
                         source="classroom_oauth",
                         kind="assignment",
                         subject=course_name,
-                        title=work.get("title", "Compito Classroom"),
-                        description=work.get("description", ""),
+                        title=str(work.get("title", "Compito Classroom"))[:500],
+                        description=str(work.get("description", ""))[:MAX_FIELD_CHARS],
                         date=date_str,
-                        url=work.get("alternateLink"),
+                        url=str(work.get("alternateLink") or "")[:2000] or None,
                     )
                 )
     items.sort(key=lambda x: x.date)
@@ -100,20 +175,32 @@ async def fetch_classroom_ical_tasks(
     ical_url: str,
     start_date: str | None = None,
     end_date: str | None = None,
+    http_client: httpx.AsyncClient | None = None,
 ) -> list[AgendaItem]:
     """Downloads and parses a Google Classroom secret iCal (.ics) feed into AgendaItem objects."""
-    clean_url = (ical_url or "").strip()
-    if not clean_url:
-        return []
-    if clean_url.startswith("webcal://"):
-        clean_url = "https://" + clean_url[len("webcal://") :]
-
-    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-        resp = await client.get(clean_url)
-        resp.raise_for_status()
-        raw_bytes = resp.content
-
-    return parse_classroom_ics(raw_bytes, start_date=start_date, end_date=end_date)
+    clean_url = validate_ical_url(ical_url)
+    own_client = http_client is None
+    client = http_client or httpx.AsyncClient(
+        timeout=15.0,
+        follow_redirects=False,
+        trust_env=False,
+    )
+    try:
+        for _ in range(MAX_REDIRECTS + 1):
+            response = await client.get(clean_url, headers={"Accept-Encoding": "identity"})
+            if response.status_code in (301, 302, 303, 307, 308):
+                location = response.headers.get("location", "")
+                if not location:
+                    raise ValueError("Redirect iCal senza header Location.")
+                clean_url = validate_ical_url(urljoin(clean_url, location))
+                continue
+            response.raise_for_status()
+            raw_bytes = await _read_limited(response, MAX_ICAL_BYTES)
+            return parse_classroom_ics(raw_bytes, start_date=start_date, end_date=end_date)
+        raise ValueError("Troppi redirect nel feed iCal.")
+    finally:
+        if own_client:
+            await client.aclose()
 
 
 def parse_classroom_ics(
@@ -128,9 +215,9 @@ def parse_classroom_ics(
         if comp.name != "VEVENT":
             continue
         uid = str(comp.get("UID", ""))
-        summary = str(comp.get("SUMMARY", "Compito Classroom")).strip()
-        desc = str(comp.get("DESCRIPTION", "")).strip()
-        url = str(comp.get("URL", "")).strip() or None
+        summary = str(comp.get("SUMMARY", "Compito Classroom")).strip()[:500]
+        desc = str(comp.get("DESCRIPTION", "")).strip()[:MAX_FIELD_CHARS]
+        url = str(comp.get("URL", "")).strip()[:2000] or None
 
         dt_prop = comp.get("DTEND") or comp.get("DTSTART")
         if not dt_prop:

@@ -1,0 +1,23 @@
+---
+name: Feature request
+about: Proponi una nuova funzionalità
+title: "[Feature] "
+labels: enhancement
+assignees: ""
+---
+
+## Problema
+
+<!-- Quale esigenza vuoi risolvere. -->
+
+## Soluzione proposta
+
+<!-- Cosa dovrebbe fare il connettore. -->
+
+## Alternative considerate
+
+<!-- Opzionale. -->
+
+## Impatto su privacy/sicurezza
+
+<!-- Questa funzionalità richiede nuovi dati, rete o permessi? -->

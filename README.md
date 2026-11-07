@@ -7,7 +7,7 @@
 Incrocia dati presi direttamente dal registro voti, agenda, compiti, argomenti delle lezioni e circolari della bacheca scolastica con qualsiasi agente AI compatibile MCP.
 
 <p align="center">
-  <a href="https://github.com/NihaoBoo/classeviva-mcp/releases"><img src="https://img.shields.io/badge/package-0.1.0-blue?style=flat-square" alt="version" height="20"></a>&nbsp;
+  <a href="https://github.com/NihaoBoo/classeviva-mcp/releases"><img src="https://img.shields.io/badge/package-1.1.0-blue?style=flat-square" alt="version" height="20"></a>&nbsp;
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white" alt="python" height="20"></a>&nbsp;
   <a href="https://github.com/NihaoBoo/classeviva-mcp"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square" alt="platform" height="20"></a>&nbsp;
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/mcp-protocol-brightgreen?style=flat-square" alt="mcp" height="20"></a>&nbsp;
@@ -16,14 +16,14 @@ Incrocia dati presi direttamente dal registro voti, agenda, compiti, argomenti d
 
 <br/>
 
-[Guida Rapida](#-guida-passo-passo) • [Google Classroom (.ics)](#-collegare-google-classroom) • [Uso da Smartphone](#-uso-da-smartphone-app-o-bot-telegramdiscord) • [Riepilogo Tool](#️-riepilogo-tool-mcp-e-limiti-anti-bloat) • [Crediti](#-crediti-e-riconoscimenti)
+[Guida Rapida](#-guida-passo-passo) • [Google Classroom (.ics)](#-collegare-google-classroom) • [Uso da Smartphone](#-uso-da-smartphone-app-o-bot-telegramdiscord) • [Riepilogo Tool](#️-riepilogo-tool-mcp-e-limiti-anti-bloat) • [Sicurezza](#sicurezza-e-privacy) • [Crediti](#-crediti-e-riconoscimenti)
 
 </div>
 
 ---
 
 ### ✅ Funzionalità Chiave 👀
-* **Gestione credenziali**: il programma prova a usare il **Keyring del sistema operativo** (Gestione Credenziali Windows / Portachiavi macOS / SecretService Linux). Se il Keyring non è disponibile o fallisce, usa un file JSON locale con password e token in chiaro; i permessi restrittivi sono applicati come best effort. Il token di sessione è inoltre conservato in `session_cache.json`. Non considerare quindi garantito che i segreti restino esclusivamente nel Keyring.
+* **Gestione credenziali**: il programma usa il **Keyring del sistema operativo** (Gestione Credenziali Windows / Portachiavi macOS / SecretService Linux). Se il Keyring non è disponibile, su Windows usa il fallback cifrato **DPAPI**; su Linux/macOS senza Keyring rifiuta di salvare in chiaro, salvo esplicito `--allow-insecure-plaintext`. La cache di sessione contiene solo `token`, `ident` e `student_id`. Dettagli in [SECURITY.md](SECURITY.md) e [PRIVACY.md](PRIVACY.md).
 * **Voti & Target**: medie ponderate, materie insufficienti e calcolo matematico del voto necessario al recupero (`calculate_grade_target`).
 * **Agenda & Compiti**: lettura scadenze, verifiche e interrogazioni (con supporto a Google Classroom tramite feed `.ics` iCal o OAuth2).
 * **Lezioni & Argomenti**: storico degli argomenti spiegati dai docenti per pianificare il ripasso prima delle verifiche.
@@ -69,7 +69,7 @@ Ti chiederà:
 1. **Email o Codice ClasseViva** (`S...` / `G...`).
 2. **Password** (nascosta mentre digiti; salvata nel Keyring se disponibile, altrimenti nel file JSON di fallback descritto nella sezione Sicurezza).
 3. **Classe e Indirizzo** (es. `5A` e `Informatica`).
-4. **Link `.ics` di Google Classroom** *(Opzionale: puoi premere Invio per saltarlo e aggiungerlo dopo parlando in chat con l'AI)*.
+4. **Link `.ics` di Google Classroom** *(Opzionale: puoi premere Invio per saltarlo e configurarlo dopo con `classeviva-mcp set-classroom-url`)*.
 
 Al termine, il comando **`login` stamperà a schermo il blocco JSON già pronto con i percorsi assoluti del tuo PC** (così eviti errori `spawn uvx ENOENT` su Windows).
 
@@ -108,10 +108,17 @@ Al termine, il comando **`login` stamperà a schermo il blocco JSON già pronto 
 
 ## 📅 Collegare Google Classroom
 
-Se hai saltato il link Classroom durante il login iniziale o hai corsi nuovi, **puoi semplicemente incollare il link in chat all'AI**:
-> *"Collega questo calendario Google Classroom ai miei compiti: [LINK.ics]"*
+Se hai saltato il link Classroom durante il login iniziale o hai corsi nuovi, **non incollarlo nella chat dell'AI**. Esegui nel terminale:
 
-L'AI chiamerà `update_student_context(classroom_ical_url=...)` e salverà il link localmente. **Il link iCal è un segreto equivalente a una password**: incollandolo in chat lo condividi con il provider AI e il codice attuale lo duplica in `student_context.json`. Non inserirlo in conversazioni condivise o con agent non fidati.
+```bash
+classeviva-mcp set-classroom-url
+```
+
+Il comando chiede il link in modo interattivo (oppure accetta l'URL come argomento) e lo salva nel Keyring o nel fallback cifrato. In questo modo il segreto non passa dal provider AI.
+
+Il link iCal è accettato solo se punta a `calendar.google.com` o `classroom.google.com`, usa HTTPS sulla porta 443 e risolve verso un indirizzo pubblico. Redirect verso host diversi, IP privati/loopback/link-local e risposte oltre 5 MB vengono bloccati.
+
+**Il link iCal è un segreto equivalente a una password.** Non inserirlo in conversazioni condivise o con agent non fidati.
 
 <details open>
 <summary><b>▼ Come reperire il link .ics segreto da Google Calendar</b></summary>
@@ -120,7 +127,7 @@ L'AI chiamerà `update_student_context(classroom_ical_url=...)` e salverà il li
 2. In alto a destra clicca sull'icona dell'ingranaggio ⚙️ -> **Impostazioni**.
 3. Nella barra laterale sinistra scorri su **Impostazioni per i miei calendari** e clicca sul nome del tuo corso Classroom.
 4. Scorri verso il basso fino alla sezione **Indirizzo segreto in formato iCal**.
-5. Clicca sull'icona Copia per copiare il link che termina in `.ics` e incollalo all'AI in chat.
+5. Clicca sull'icona Copia per copiare il link che termina in `.ics` e passalo a `classeviva-mcp set-classroom-url` nel terminale.
 
 *(Nota: il feed `.ics` riporta tutti i compiti con data di scadenza; i post sullo Stream senza scadenza non fanno parte del calendario).*
 </details>
@@ -147,7 +154,7 @@ Se usi un ambiente che espone i tuoi server MCP in cloud o rete privata (es. ses
 1. **Dove tenerlo acceso**: sul tuo PC quando è acceso, su un vecchio telefono Android con **Termux**, oppure gratis 24/7 su una piccola VPS (**Oracle Cloud Free Tier**).
 2. **Quale modello AI usare (anche a costo zero)**: se non hai un abbonamento AI a pagamento, crea una chiave gratuita su **[OpenRouter](https://openrouter.ai)** e usa i modelli `:free` (come Gemini Flash o Llama/DeepSeek free) configurandoli su **Hermes Agent**, **Opencode** o tramite **CC Switch**.
 3. **Se il bot è solo per te (Chat privata / DM)**: configura nel tuo bot il filtro sul tuo `OWNER_USER_ID` di Telegram o Discord, così il bot risponde esclusivamente a te.
-4. **Non aggiungere il bot a gruppi Telegram o server Discord condivisi.** Il server non dispone di autenticazione o autorizzazioni per singolo chiamante e `CLASSEVIVA_PUBLIC_MODE` non isola i dati personali. Usalo soltanto in DM privati con un filtro `OWNER_USER_ID` applicato dal bot, oppure tramite una rete privata con accesso riservato. Il filtro del bot è una protezione esterna: non sostituisce controlli di accesso implementati nel server MCP.
+4. **Non aggiungere il bot a gruppi Telegram o server Discord condivisi.** Il server non dispone di autenticazione o autorizzazioni per singolo chiamante. `CLASSEVIVA_READ_ONLY_MODE=true` minimizza i dati e disabilita i tool personali/di scrittura, ma resta una modalità per singolo account e non isola più utenti. Usalo soltanto in DM privati con un filtro `OWNER_USER_ID` applicato dal bot, oppure tramite una rete privata con accesso riservato. Il filtro del bot è una protezione esterna: non sostituisce controlli di accesso implementati nel server MCP.
 
 <details>
 <summary><b>▼ Permessi Bot Discord pre-calcolati (Clicca per espandere)</b></summary>
@@ -162,19 +169,21 @@ Su [Discord Developer Portal](https://discord.com/developers/applications):
 
 ## 🛠️ Riepilogo Tool MCP e Limiti Anti-Bloat
 
-| Tool | Descrizione | Disabilitato in `PUBLIC_MODE`? |
+| Tool | Descrizione | Disabilitato in `READ_ONLY_MODE`? |
 |---|---|---|
-| `get_today_context` | Data/ora (`Europe/Rome`), profilo, contesto, materie/professori e orario; può includere dati personali anche in `PUBLIC_MODE`. | No |
-| `update_student_context` | Salva o aggiorna classe (`5A`), indirizzo, n. registro, note e **link .ics di Google Classroom**. | No |
-| `save_class_timetable` | Valida e salva in locale l'orario settimanale della classe. | No |
-| `get_homework` | Compiti e consegne dei prossimi N giorni (ClasseViva + Classroom). | No |
-| `get_agenda` | Verifiche, interrogazioni, compiti e note tra due date. | No |
-| `get_lessons` | **Argomenti spiegati dai prof** a lezione per preparare verifiche e recuperi. | No |
+| `get_today_context` | Data/ora (`Europe/Rome`), profilo minimizzato, contesto, materie/professori e orario. | No |
+| `update_student_context` | Salva o aggiorna classe (`5A`), indirizzo, n. registro e note. Il link iCal non si configura da qui. | 🔒 **Sì** |
+| `save_class_timetable` | Valida e salva in locale l'orario settimanale della classe. | 🔒 **Sì** |
+| `get_homework` | Compiti e consegne dei prossimi N giorni (ClasseViva + Classroom). | 🔒 **Sì** |
+| `get_agenda` | Verifiche, interrogazioni, compiti e note tra due date. | 🔒 **Sì** |
+| `get_lessons` | **Argomenti spiegati dai prof** a lezione per preparare verifiche e recuperi. | 🔒 **Sì** |
 | `list_notices` | Elenca tutte le circolari in bacheca senza nascondere quelle vecchie, marcandole come `🆕 NUOVA` o `📌 GIÀ VISTA`. | No |
-| `read_notice_pdf` | Estrae testo da `.pdf`/`.docx`/`.xlsx`/`.zip` filtrando per classe, o renderizza PNG se scansionato. | No |
+| `read_notice_pdf` | Estrae testo da `.pdf`/`.docx`/`.xlsx`/`.zip` filtrando per classe, o renderizza PNG se scansionato. In read-only non segna come letta e non salva file. | No |
 | `get_grades` | Voti, medie ponderate per materia ed elenco insufficienze (`< 6.0`). | 🔒 **Sì** |
 | `calculate_grade_target` | Calcola quale voto serve nella prossima verifica per arrivare alla media obiettivo. | 🔒 **Sì** |
 | `get_absences` | Assenze, ritardi e uscite anticipate. | 🔒 **Sì** |
+
+`CLASSEVIVA_READ_ONLY_MODE=true` (alias retrocompatibile: `CLASSEVIVA_PUBLIC_MODE=true`) non registra i tool personali e di scrittura e fa fallire le funzioni corrispondenti con `PermissionError`. Non è una modalità multiutente: il server non autentica i chiamanti.
 
 ### Limiti di Archiviazione Automatici (Zero crescita infinita su disco)
 Per evitare che la cache locale (`%LOCALAPPDATA%\classeviva-mcp` su Windows o `~/.local/share/classeviva-mcp` su Linux/Mac) cresca all'infinito nel tempo:
@@ -184,19 +193,19 @@ Per evitare che la cache locale (`%LOCALAPPDATA%\classeviva-mcp` su Windows o `~
 
 ---
 
-## Sicurezza e privacy: limiti verificati nel codice
+## Sicurezza e privacy
 
-> **Importante:** questa sezione descrive il comportamento del codice attuale; non rappresenta una certificazione di sicurezza. Non esporre il server a gruppi, utenti non fidati o Internet.
+> **Importante:** questa sezione descrive il comportamento della v1.1.0; non rappresenta una certificazione di sicurezza. Non esporre il server a gruppi, utenti non fidati o Internet. Dettagli completi in [SECURITY.md](SECURITY.md) e [PRIVACY.md](PRIVACY.md).
 
-- **`CLASSEVIVA_PUBLIC_MODE` non è una modalità multiutente sicura.** Disabilita soltanto `get_grades`, `calculate_grade_target` e `get_absences`. `get_today_context` continua a restituire il profilo ClasseViva e l'intero contesto locale, che può includere nome, cognome, identificativi, scuola, classe, numero di registro, note, orario e URL segreto del feed Classroom. Anche gli altri tool possono restituire dati collegati all'account configurato.
-- **Il feed Classroom è un URL segreto e viene scaricato senza una protezione SSRF completa.** Il codice accetta URL forniti tramite `update_student_context`, segue i redirect HTTP e non applica una allowlist di host né un blocco esplicito degli indirizzi loopback/reti private. In un server accessibile a chiamanti non fidati questo può consentire richieste verso servizi interni. Non permettere a terzi di invocare questi tool.
-- **I segreti non sono sempre confinati al Keyring.** Se il Keyring fallisce, `credentials.json` contiene password, token Google e URL iCal in chiaro. `session_cache.json` contiene il token di sessione Spaggiari. `student_context.json` contiene a sua volta l'URL iCal segreto. Il programma tenta di applicare permessi `0600` ai file, ma questa protezione è best effort e non equivale a cifratura; su Windows `chmod` non offre la stessa semantica POSIX.
-- **Logout incompleto rispetto ai dati locali.** Il comando `logout` tenta di eliminare le voci dal Keyring (ma ignora eventuali errori), rimuove il fallback `credentials.json` e `session_cache.json`, ma non elimina `student_context.json`: l'URL iCal e gli altri dati salvati nel contesto possono quindi rimanere sul dispositivo. Il messaggio finale di logout non verifica che tutte le voci del Keyring siano state effettivamente cancellate.
-- **La lettura di una circolare può modificarne lo stato sul registro.** `read_notice_pdf` richiama l'endpoint Spaggiari `noticeboard/read`; il comportamento del servizio remoto può segnare la circolare come letta. `list_notices`, invece, legge l'elenco e aggiorna soltanto il tracciamento locale delle circolari viste dall'agent.
-- **Output diagnostici non completamente anonimi.** `login` stampa l'identificativo dell'account e può stampare scuola e classe; `doctor` può stampare classe o scuola. Non condividere integralmente questi output in issue pubbliche o log accessibili ad altri.
-- **Limiti incompleti sui file in ingresso.** Il limite di 15 file e 25 MB è applicato all'estrazione di archivi ZIP generici, ma i PDF, DOCX e XLSX scaricati direttamente non hanno un limite generale di dimensione o di pagine prima del parsing. Anche il download del feed iCal non impone un limite esplicito alla dimensione della risposta. File molto grandi o costruiti appositamente possono quindi consumare memoria e CPU; i limiti ZIP non proteggono tutti i percorsi di parsing.
+- **`CLASSEVIVA_READ_ONLY_MODE` (alias `CLASSEVIVA_PUBLIC_MODE`) minimizza i dati e disabilita le scritture.** In questa modalità i tool personali e di scrittura (`get_grades`, `get_absences`, `get_homework`, `get_agenda`, `get_lessons`, `calculate_grade_target`, `update_student_context`, `save_class_timetable`) non vengono registrati e le funzioni sollevano `PermissionError`. `get_today_context` restituisce un profilo senza nome, cognome e identificativi, e un contesto senza numero di registro, note o ID delle circolari viste. Resta comunque una modalità per singolo account, **non** un sistema multiutente: il server non autentica i chiamanti.
+- **Il feed Classroom è protetto contro SSRF.** Sono ammessi solo host `calendar.google.com` e `classroom.google.com`, schema HTTPS, porta 443 e risoluzione verso IP pubblici. I redirect vengono seguiti manualmente e rivalidati (massimo 3), la risposta è limitata a 5 MB e `trust_env=False` evita proxy ambientali. Il link si configura solo via CLI (`classeviva-mcp set-classroom-url`) e non viene mai restituito dai tool.
+- **I segreti restano nel Keyring o in un fallback cifrato.** Su Windows il fallback usa DPAPI; su Linux/macOS senza Keyring il salvataggio fallisce in modo esplicito, salvo `--allow-insecure-plaintext`. I file sono scritti in modo atomico con permessi `0600` dove supportati. `session_cache.json` contiene solo `token`, `ident` e `student_id`. L'URL iCal viene migrato automaticamente fuori da `student_context.json`.
+- **Logout esplicito.** `classeviva-mcp logout` rimuove credenziali e sessione ma conserva orario e note; `classeviva-mcp logout --purge` elimina anche `student_context.json` e la cache degli allegati. Gli errori di cancellazione dal Keyring vengono segnalati.
+- **La lettura di una circolare può modificarne lo stato sul registro.** Spaggiari restituisce testo e allegati completi solo dopo l'endpoint `noticeboard/read`, che segna la circolare come letta. `read_notice_pdf` espone `allow_mark_as_read` (default `True`) e restituisce `notice_marked_as_read` / `notice_was_unread`; con `allow_mark_as_read=False` su una circolare nuova restituisce solo i metadati e non modifica lo stato remoto. In `READ_ONLY_MODE` il valore è forzato a `False` e `save_pdf` è ignorato. `list_notices` non chiama mai l'endpoint di lettura.
+- **Output diagnostici minimizzati.** `login` e `doctor` non stampano nome, cognome o identificativo completo; `--verbose` mostra solo scuola/classe.
+- **Limiti sulle risorse in ingresso.** Allegati fino a 20 MB, PDF fino a 50 pagine, XML DOCX fino a 10 MB, XLSX fino a 500 righe × 50 colonne × 20 fogli, ZIP fino a 15 file / 25 MB decompressi con profondità massima 1. I redirect degli allegati sono ammessi solo verso `*.spaggiari.eu` e il download verso il CDN avviene senza header di autenticazione.
 
-Questi limiti richiedono modifiche al codice, non possono essere risolti soltanto impostando `CLASSEVIVA_PUBLIC_MODE`. Prima di un uso condiviso occorre almeno introdurre autorizzazioni per chiamante, minimizzazione dei dati restituiti, protezione SSRF per i feed, gestione sicura dei segreti, limiti di dimensione per i file e una procedura di logout/cancellazione completa.
+Prima di un uso condiviso servono comunque autorizzazioni per chiamante e isolamento multiutente: la modalità read-only non sostituisce questi controlli.
 
 ---
 
