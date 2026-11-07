@@ -70,6 +70,50 @@ def test_save_fails_closed_without_keyring_or_dpapi(
     assert not store.fallback_file.exists()
 
 
+def test_probe_storage_detects_keyring_without_persisting_credentials(
+    tmp_path: Path, fake_keyring: dict[tuple[str, str], str]
+) -> None:
+    store = CredentialStore(fallback_dir=tmp_path)
+
+    assert store.probe_storage() == "keyring"
+    # The probe must not leave any credential behind.
+    assert (SERVICE_NAME, "username") not in fake_keyring
+    assert (SERVICE_NAME, "password") not in fake_keyring
+    assert all(service != SERVICE_NAME for service, _ in fake_keyring)
+    assert not store.fallback_file.exists()
+
+
+def test_probe_storage_fails_closed_without_keyring_or_dpapi(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("keyring unavailable")
+
+    monkeypatch.setattr(keyring, "set_password", _boom)
+    monkeypatch.setattr(keyring, "get_password", _boom)
+    monkeypatch.setattr(keyring, "delete_password", _boom)
+    store = CredentialStore(fallback_dir=tmp_path)
+    store._dpapi = False
+
+    with pytest.raises(RuntimeError, match="Rifiuto di salvare credenziali in chiaro"):
+        store.probe_storage()
+    assert not store.fallback_file.exists()
+
+
+def test_probe_storage_reports_plaintext_fallback_when_opted_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("keyring unavailable")
+
+    monkeypatch.setattr(keyring, "set_password", _boom)
+    monkeypatch.setattr(keyring, "get_password", _boom)
+    store = CredentialStore(fallback_dir=tmp_path, allow_insecure_plaintext=True)
+    store._dpapi = False
+
+    assert store.probe_storage() == "file"
+
+
 def test_plaintext_fallback_requires_explicit_optin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

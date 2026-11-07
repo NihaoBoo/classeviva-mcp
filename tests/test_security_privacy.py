@@ -59,6 +59,7 @@ class FakeClient:
             "attachments": [],
             "marked_as_read": False,
             "was_unread": True,
+            "read_state_known": True,
             "skipped": True,
         }
 

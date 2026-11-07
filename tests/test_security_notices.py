@@ -28,6 +28,20 @@ NOTICE_PAYLOAD = {
     ]
 }
 
+READ_NOTICE_PAYLOAD = {
+    "items": [
+        {
+            "pubId": 245,
+            "evtCode": "CF",
+            "cntTitle": "Circolare gia letta",
+            "cntCategory": "Didattica",
+            "pubDT": "2026-11-06T11:00:00",
+            "readStatus": True,
+            "attachments": [{"attachNum": 1, "fileName": "allegato.pdf"}],
+        }
+    ]
+}
+
 MULTI_ATTACHMENT_PAYLOAD = {
     "items": [
         {
@@ -78,9 +92,87 @@ async def test_unread_notice_is_not_marked_when_disallowed(tmp_path: Path) -> No
     assert result["skipped"] is True
     assert result["marked_as_read"] is False
     assert result["was_unread"] is True
+    assert result["read_state_known"] is True
     assert result["attachments"] == []
     assert not any("/noticeboard/read/" in call for call in calls)
     assert not any("/noticeboard/attach/" in call for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_failed_noticeboard_listing_never_marks_as_read(tmp_path: Path) -> None:
+    """The read state is unknown when the listing fails: we must fail closed."""
+    calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(f"{request.method} {request.url.path}")
+        if request.url.path.endswith("/noticeboard"):
+            return httpx.Response(500, text="boom")
+        raise AssertionError(f"Chiamata inattesa: {request.method} {request.url}")
+
+    client, http_client = _client(tmp_path, handler)
+    async with http_client:
+        result = await client.read_notice_content(
+            event_code="CF", pub_id="245", allow_mark_as_read=False
+        )
+
+    assert result["skipped"] is True
+    assert result["marked_as_read"] is False
+    assert result["read_state_known"] is False
+    assert result["attachments"] == []
+    assert not any("/noticeboard/read/" in call for call in calls)
+    assert not any("/noticeboard/attach/" in call for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_missing_notice_never_marks_as_read_without_consent(tmp_path: Path) -> None:
+    """The notice is absent from the listing: the read state is unknown."""
+    calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(f"{request.method} {request.url.path}")
+        if request.url.path.endswith("/noticeboard"):
+            return httpx.Response(200, json={"items": []})
+        raise AssertionError(f"Chiamata inattesa: {request.method} {request.url}")
+
+    client, http_client = _client(tmp_path, handler)
+    async with http_client:
+        result = await client.read_notice_content(
+            event_code="CF", pub_id="999", allow_mark_as_read=False
+        )
+
+    assert result["skipped"] is True
+    assert result["marked_as_read"] is False
+    assert result["read_state_known"] is False
+    assert not any("/noticeboard/read/" in call for call in calls)
+    assert not any("/noticeboard/attach/" in call for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_already_read_notice_is_read_without_marking_as_read(tmp_path: Path) -> None:
+    """An already-read notice can be fetched without changing the remote state."""
+    calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(f"{request.method} {request.url.path}")
+        if request.url.path.endswith("/noticeboard"):
+            return httpx.Response(200, json=READ_NOTICE_PAYLOAD)
+        if "/noticeboard/read/" in request.url.path:
+            return httpx.Response(200, json={"item": {"cntText": "Testo integrale"}})
+        if "/noticeboard/attach/" in request.url.path:
+            return httpx.Response(200, content=b"%PDF-1.4 contenuto")
+        raise AssertionError(f"Chiamata inattesa: {request.method} {request.url}")
+
+    client, http_client = _client(tmp_path, handler)
+    async with http_client:
+        result = await client.read_notice_content(
+            event_code="CF", pub_id="245", allow_mark_as_read=False
+        )
+
+    assert result["skipped"] is False
+    assert result["marked_as_read"] is False
+    assert result["was_unread"] is False
+    assert result["text_body"] == "Testo integrale"
+    assert len(result["attachments"]) == 1
 
 
 @pytest.mark.asyncio
@@ -168,6 +260,54 @@ async def test_unread_notice_defaults_to_no_mark_as_read(tmp_path: Path) -> None
     assert result["marked_as_read"] is False
     assert not any("/noticeboard/read/" in call for call in calls)
     assert not any("/noticeboard/attach/" in call for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_read_only_endpoints_are_cached_briefly(tmp_path: Path) -> None:
+    """Advanced workflows must not hit the Spaggiari API twice for the same data."""
+    calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path.endswith("/noticeboard"):
+            return httpx.Response(200, json=NOTICE_PAYLOAD)
+        if request.url.path.endswith("/grades"):
+            return httpx.Response(200, json={"grades": []})
+        raise AssertionError(f"Chiamata inattesa: {request.method} {request.url}")
+
+    client, http_client = _client(tmp_path, handler)
+    async with http_client:
+        await client.list_notices()
+        await client.list_notices()
+        await client.get_grades()
+        await client.get_grades()
+
+    assert calls.count("/rest/v1/students/1234567/noticeboard") == 1
+    assert calls.count("/rest/v1/students/1234567/grades") == 1
+
+
+@pytest.mark.asyncio
+async def test_marking_as_read_invalidates_the_noticeboard_cache(tmp_path: Path) -> None:
+    """After a remote state change the cached noticeboard must be dropped."""
+    calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path.endswith("/noticeboard"):
+            return httpx.Response(200, json=READ_NOTICE_PAYLOAD)
+        if "/noticeboard/read/" in request.url.path:
+            return httpx.Response(200, json={"item": {"cntText": "Testo"}})
+        raise AssertionError(f"Chiamata inattesa: {request.method} {request.url}")
+
+    client, http_client = _client(tmp_path, handler)
+    async with http_client:
+        await client.list_notices()
+        await client.read_notice_content(
+            event_code="CF", pub_id="245", allow_mark_as_read=True
+        )
+        await client.list_notices()
+
+    assert calls.count("/rest/v1/students/1234567/noticeboard") == 3
 
 
 @pytest.mark.asyncio

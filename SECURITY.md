@@ -19,7 +19,7 @@ Please **do not open a public issue** for security problems.
 You will receive an acknowledgement as soon as possible. Please allow reasonable
 time for a fix before public disclosure.
 
-## Security model (v1.1.2)
+## Security model (v1.1.3)
 
 `classeviva-mcp` is a **single-account local connector**. It does not authenticate
 MCP callers and is not a multi-user service. Do not expose it to untrusted users,
@@ -32,6 +32,11 @@ public networks, shared group chats, or the open Internet.
 - Windows fallback: DPAPI-encrypted file bound to the current user profile.
 - Linux/macOS without a keyring: saving fails closed unless the user explicitly
   passes `--allow-insecure-plaintext`.
+- `login` verifies the password against Spaggiari **before** writing anything to
+  the keyring or to disk. A wrong password is never stored.
+- `login` probes the available storage backend before asking for the password,
+  so a machine without a usable keyring fails immediately instead of after the
+  user has typed their password.
 - Files are written atomically with `0600` permissions where the platform
   supports them.
 - `session_cache.json` is minimised to `token`, `ident`, `student_id`.
@@ -79,6 +84,11 @@ notice, only metadata is returned and the remote state is not changed; pass
 The built-in `setup` and `notices_brief` prompts ask for confirmation first.
 `list_notices` never calls the read endpoint.
 
+The read state is verified against a **fresh** noticeboard listing (never from
+the cache). If the listing fails or the notice is not in it, the read state is
+unknown and the server **fails closed**: metadata only, no read receipt, no
+attachment download. `notice_read_state_known` reports which case occurred.
+
 ### Resource limits
 
 | Resource | Limit |
@@ -95,6 +105,7 @@ The built-in `setup` and `notices_brief` prompts ask for confirmation first.
 | `custom_notes` | 1,500 chars |
 | `seen_notice_ids` | 200 (FIFO) |
 | Saved attachment files | 30 (rotation) |
+| Read-only response cache | 60 s TTL, dropped on any state change |
 
 ### Logout
 

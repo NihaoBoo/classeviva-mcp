@@ -154,6 +154,37 @@ class CredentialStore:
 
     # --- Credentials ---
 
+    def probe_storage(self) -> str:
+        """Checks that credentials can be stored securely, without persisting them.
+
+        Returns the backend that would be used ('keyring', 'dpapi' or 'file').
+        Raises RuntimeError when no secure storage is available.
+        """
+        probe_service = f"{SERVICE_NAME}-probe"
+        try:
+            keyring.set_password(probe_service, "probe", "1")
+            if keyring.get_password(probe_service, "probe") == "1":
+                try:
+                    keyring.delete_password(probe_service, "probe")
+                except Exception:
+                    pass
+                return "keyring"
+        except Exception:
+            pass
+        try:
+            keyring.delete_password(probe_service, "probe")
+        except Exception:
+            pass
+        if self._dpapi:
+            return "dpapi"
+        if self.allow_insecure_plaintext:
+            return "file"
+        raise RuntimeError(
+            "Keyring non disponibile e DPAPI non applicabile su questa piattaforma. "
+            "Rifiuto di salvare credenziali in chiaro. Usa CLASSEVIVA_USER/CLASSEVIVA_PASSWORD "
+            "oppure rilancia `login --allow-insecure-plaintext` se accetti il rischio."
+        )
+
     def save(
         self,
         username: str,

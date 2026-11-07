@@ -544,18 +544,28 @@ async def read_notice_pdf(
         "read_only_mode": READ_ONLY_MODE,
         "notice_marked_as_read": bool(raw.get("marked_as_read", False)),
         "notice_was_unread": bool(raw.get("was_unread", False)),
+        "notice_read_state_known": bool(raw.get("read_state_known", False)),
         "citation": f"Circolare ID #{notice_id} (Bacheca ClasseViva)",
     }
 
     if raw.get("skipped"):
+        if base_result["notice_read_state_known"]:
+            skipped_text = (
+                "La circolare non è ancora stata aperta su Spaggiari. Per scaricare testo integrale e allegati "
+                "serve contrassegnarla come letta: richiama il tool con `allow_mark_as_read=True` dopo aver "
+                "avvisato lo studente. In modalità read-only questa operazione non è consentita."
+            )
+        else:
+            skipped_text = (
+                "Non è stato possibile verificare se la circolare è già stata letta (elenco della bacheca "
+                "non raggiungibile o circolare non presente). Per sicurezza non è stato segnato nulla come "
+                "letto: riprova, oppure richiama il tool con `allow_mark_as_read=True` dopo aver avvisato "
+                "lo studente. In modalità read-only questa operazione non è consentita."
+            )
         base_result.update(
             {
                 "attachments_count": 0,
-                "text": (
-                    "La circolare non è ancora stata aperta su Spaggiari. Per scaricare testo integrale e allegati "
-                    "serve contrassegnarla come letta: richiama il tool con `allow_mark_as_read=True` dopo aver "
-                    "avvisato lo studente. In modalità read-only questa operazione non è consentita."
-                ),
+                "text": skipped_text,
                 "is_scanned_image_pdf": False,
                 "rendered_page_images": [],
                 "saved_pdf_path": None,
@@ -687,4 +697,12 @@ if not READ_ONLY_MODE:
     mcp.prompt()(daily_brief)
     mcp.prompt()(recovery_plan)
 else:
+    # In read-only mode only `notices_brief` makes sense: the other prompts
+    # drive tools that are intentionally not registered here.
+    mcp.prompt()(notices_brief)
+
+# `notices_brief` is useful in personal mode too: it only uses `list_notices`
+# and `read_notice_pdf` (always registered) and it is the prompt that asks for
+# confirmation before marking a notice as read.
+if not READ_ONLY_MODE:
     mcp.prompt()(notices_brief)

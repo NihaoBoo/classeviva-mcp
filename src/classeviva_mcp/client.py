@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from classeviva_mcp.credentials import CredentialStore
+from classeviva_mcp.credentials import CredentialStore, StoredCredentials
 from classeviva_mcp.models import (
     AbsenceItem,
     AgendaItem,
@@ -28,6 +29,7 @@ DEFAULT_HEADERS = {
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024  # 20 MB per attachment
 MAX_NOTICE_TOTAL_BYTES = 40 * 1024 * 1024  # 40 MB across all attachments of one notice
 ALLOWED_ATTACHMENT_HOSTS = ("cdndoc.spaggiari.eu",)
+CACHE_TTL_SECONDS = 60.0  # short-lived cache for read-only endpoints
 
 logger = logging.getLogger(__name__)
 
@@ -49,16 +51,65 @@ class SpaggiariClient:
         self,
         store: CredentialStore | None = None,
         http_client: httpx.AsyncClient | None = None,
+        *,
+        credentials: StoredCredentials | None = None,
+        persist_session: bool = True,
     ) -> None:
         self.store = store or CredentialStore()
         self._external_client = http_client
+        self._owned_client: httpx.AsyncClient | None = None
+        self._credentials = credentials
+        self._persist_session = persist_session
         self._token: str = ""
         self._ident: str = ""
         self._student_id: str = ""
         self._first_name: str = ""
         self._last_name: str = ""
         self._semaphore = asyncio.Semaphore(2)
-        self._load_cached_session()
+        self._cache: dict[str, tuple[float, Any]] = {}
+        if credentials is None:
+            self._load_cached_session()
+
+    def invalidate_cache(self) -> None:
+        """Drops the cached read-only responses (called after any mutation)."""
+        self._cache.clear()
+
+    def _cache_get(self, key: str) -> Any | None:
+        entry = self._cache.get(key)
+        if entry is None:
+            return None
+        expires_at, value = entry
+        if expires_at < time.monotonic():
+            self._cache.pop(key, None)
+            return None
+        return value
+
+    def _cache_set(self, key: str, value: Any) -> None:
+        self._cache[key] = (time.monotonic() + CACHE_TTL_SECONDS, value)
+
+    def _http(self) -> httpx.AsyncClient:
+        """Returns the shared HTTP client, creating it on first use.
+
+        Reusing one client keeps the TLS session and the connection pool alive
+        across tool calls, which removes a full TLS handshake from every
+        request.
+        """
+        if self._external_client is not None:
+            return self._external_client
+        if self._owned_client is None:
+            self._owned_client = httpx.AsyncClient(
+                timeout=25.0,
+                follow_redirects=False,
+                trust_env=False,
+                limits=httpx.Limits(max_connections=4, max_keepalive_connections=4),
+            )
+        return self._owned_client
+
+    async def aclose(self) -> None:
+        """Closes the internally owned HTTP client (if any)."""
+        if self._owned_client is not None:
+            await self._owned_client.aclose()
+            self._owned_client = None
 
     def _load_cached_session(self) -> None:
         cached = self.store.load_session()
@@ -82,24 +133,22 @@ class SpaggiariClient:
         return "student"
 
     async def _raw_post_login(self, payload: dict[str, Any]) -> httpx.Response:
-        if self._external_client is not None:
-            return await self._external_client.post(
-                f"{BASE_URL}/auth/login",
-                headers=DEFAULT_HEADERS,
-                json=payload,
-            )
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            return await client.post(
-                f"{BASE_URL}/auth/login",
-                headers=DEFAULT_HEADERS,
-                json=payload,
-            )
+        return await self._http().post(
+            f"{BASE_URL}/auth/login",
+            headers=DEFAULT_HEADERS,
+            json=payload,
+        )
 
     async def login(self) -> StudentProfile:
         """Logs in using stored credentials (email, S-code, or G-code).
         Automatically resolves multi-profile `choices` if returned by Spaggiari.
+
+        When ``credentials`` were injected at construction time they are used
+        instead of the persisted ones, and the session is not written to disk
+        unless ``persist_session`` is True. This lets the CLI validate a
+        password against Spaggiari *before* storing it.
         """
-        creds = self.store.load()
+        creds = self._credentials or self.store.load()
         payload: dict[str, Any] = {
             "ident": creds.preferred_profile or None,
             "pass": creds.password,
@@ -134,13 +183,14 @@ class SpaggiariClient:
         self._first_name = str(data.get("firstName", ""))
         self._last_name = str(data.get("lastName", ""))
 
-        self.store.save_session(
-            {
-                "token": self._token,
-                "ident": self._ident,
-                "student_id": self._student_id,
-            }
-        )
+        if self._persist_session:
+            self.store.save_session(
+                {
+                    "token": self._token,
+                    "ident": self._ident,
+                    "student_id": self._student_id,
+                }
+            )
 
         return StudentProfile(
             ident=self._ident,
@@ -169,13 +219,7 @@ class SpaggiariClient:
                     headers.pop("Content-Type", None)
 
                 url = f"{BASE_URL}{endpoint.format(student_id=self._student_id)}"
-                if self._external_client is not None:
-                    resp = await self._external_client.request(method, url, headers=headers, **kwargs)
-                else:
-                    async with httpx.AsyncClient(
-                        timeout=25.0, follow_redirects=False, trust_env=False
-                    ) as client:
-                        resp = await client.request(method, url, headers=headers, **kwargs)
+                resp = await self._http().request(method, url, headers=headers, **kwargs)
 
                 if 300 <= resp.status_code < 400:
                     raise ClasseVivaError(
@@ -244,10 +288,9 @@ class SpaggiariClient:
             return await self._download_attachment_with_client(
                 self._external_client, url, headers, max_bytes
             )
-        async with httpx.AsyncClient(
-            timeout=25.0, follow_redirects=False, trust_env=False
-        ) as client:
-            return await self._download_attachment_with_client(client, url, headers, max_bytes)
+        return await self._download_attachment_with_client(
+            self._http(), url, headers, max_bytes
+        )
 
     async def _download_attachment_with_client(
         self,
@@ -279,6 +322,11 @@ class SpaggiariClient:
         """Returns student & school profile details from /students/{id}/cards."""
         if not self._token or not self._student_id:
             await self.login()
+        cached = self._cache_get("profile")
+        if cached is not None:
+            # Copy: callers may tweak the returned profile (e.g. fill in the
+            # saved class), and we must not mutate the cached instance.
+            return cached.model_copy()
         school_class = ""
         school_name = ""
         for ep in ("/students/{student_id}/cards", "/students/{student_id}/card"):
@@ -304,7 +352,7 @@ class SpaggiariClient:
             except Exception:
                 continue
 
-        return StudentProfile(
+        profile = StudentProfile(
             ident=self._ident,
             student_id=self._student_id,
             account_type=self.detect_account_type(self._ident),
@@ -313,13 +361,21 @@ class SpaggiariClient:
             school_class=school_class,
             school_name=school_name,
         )
+        self._cache_set("profile", profile)
+        return profile
 
     async def get_agenda(self, start_date: str, end_date: str) -> list[AgendaItem]:
         """Fetches agenda items (homework, exams, notes) between start_date and end_date (YYYY-MM-DD)."""
         s_clean = start_date.replace("-", "")
         e_clean = end_date.replace("-", "")
-        resp = await self._request("GET", f"/students/{{student_id}}/agenda/all/{s_clean}/{e_clean}")
-        raw_items = resp.json().get("agenda") or []
+        cache_key = f"agenda:{s_clean}:{e_clean}"
+        raw_items = self._cache_get(cache_key)
+        if raw_items is None:
+            raw_items = await self._fetch_json(
+                cache_key,
+                f"/students/{{student_id}}/agenda/all/{s_clean}/{e_clean}",
+                "agenda",
+            )
 
         items: list[AgendaItem] = []
         for ev in raw_items:
@@ -362,8 +418,14 @@ class SpaggiariClient:
         """Fetches lessons and topics explained in class between start_date and end_date (YYYY-MM-DD)."""
         s_clean = start_date.replace("-", "")
         e_clean = end_date.replace("-", "")
-        resp = await self._request("GET", f"/students/{{student_id}}/lessons/{s_clean}/{e_clean}")
-        raw_lessons = resp.json().get("lessons") or []
+        cache_key = f"lessons:{s_clean}:{e_clean}"
+        raw_lessons = self._cache_get(cache_key)
+        if raw_lessons is None:
+            raw_lessons = await self._fetch_json(
+                cache_key,
+                f"/students/{{student_id}}/lessons/{s_clean}/{e_clean}",
+                "lessons",
+            )
 
         results: list[LessonItem] = []
         for ls in raw_lessons:
@@ -385,10 +447,24 @@ class SpaggiariClient:
         results.sort(key=lambda x: (x.date, x.hour_position))
         return results
 
+    async def _fetch_json(self, cache_key: str, endpoint: str, field: str) -> list[Any]:
+        """Fetches a read-only list endpoint and caches it briefly.
+
+        The cache keeps advanced workflows (brief + recovery plan + grades in a
+        row) from hitting the Spaggiari API more than once for the same data.
+        """
+        resp = await self._request("GET", endpoint)
+        items = resp.json().get(field) or []
+        self._cache_set(cache_key, items)
+        return items
+
     async def get_grades(self, subject_filter: str | None = None) -> list[GradeItem]:
         """Fetches student grades."""
-        resp = await self._request("GET", "/students/{student_id}/grades")
-        raw_grades = resp.json().get("grades") or []
+        cache_key = "grades"
+        cached = self._cache_get(cache_key)
+        raw_grades = cached if cached is not None else await self._fetch_json(
+            "grades", "/students/{student_id}/grades", "grades"
+        )
 
         results: list[GradeItem] = []
         for g in raw_grades:
@@ -417,8 +493,11 @@ class SpaggiariClient:
 
     async def get_absences(self) -> list[AbsenceItem]:
         """Fetches absences, delays, and early exits."""
-        resp = await self._request("GET", "/students/{student_id}/absences/details")
-        events = resp.json().get("events") or []
+        events = self._cache_get("absences")
+        if events is None:
+            events = await self._fetch_json(
+                "absences", "/students/{student_id}/absences/details", "events"
+            )
 
         code_map = {
             "ABA0": "absence",
@@ -443,8 +522,11 @@ class SpaggiariClient:
 
     async def list_notices(self, query: str | None = None, unread_only: bool = False) -> list[NoticeItem]:
         """Lists noticeboard circulars (bacheca) without triggering read receipts."""
-        resp = await self._request("GET", "/students/{student_id}/noticeboard")
-        items = resp.json().get("items") or []
+        items = self._cache_get("noticeboard")
+        if items is None:
+            items = await self._fetch_json(
+                "noticeboard", "/students/{student_id}/noticeboard", "items"
+            )
 
         results: list[NoticeItem] = []
         for it in items:
@@ -484,8 +566,11 @@ class SpaggiariClient:
 
     async def get_subjects(self) -> list[SubjectTeacher]:
         """Fetches the list of school subjects and assigned teachers from /students/{id}/subjects."""
-        resp = await self._request("GET", "/students/{student_id}/subjects")
-        raw_subjects = resp.json().get("subjects") or []
+        raw_subjects = self._cache_get("subjects")
+        if raw_subjects is None:
+            raw_subjects = await self._fetch_json(
+                "subjects", "/students/{student_id}/subjects", "subjects"
+            )
         results: list[SubjectTeacher] = []
         for s in raw_subjects:
             teachers = [
@@ -528,6 +613,9 @@ class SpaggiariClient:
         found = False
 
         try:
+            # Always fetched fresh (never from the cache): the read state must
+            # be the real one, otherwise we could mark an unread notice as
+            # read without consent.
             nb_resp = await self._request("GET", "/students/{student_id}/noticeboard")
             for it in nb_resp.json().get("items") or []:
                 if str(it.get("pubId") or it.get("evtId")) == str(pub_id):
@@ -539,28 +627,41 @@ class SpaggiariClient:
         except Exception:
             pass
 
-        if was_unread and not allow_mark_as_read:
+        # Without explicit consent we must never reach the `read` endpoint,
+        # because that call marks the notice as read on the registry.
+        # We only proceed when we positively know the notice is ALREADY read
+        # (the call is then a no-op for the remote state). If the listing
+        # failed or the notice was not found, the read state is unknown:
+        # fail closed and return metadata only.
+        if not allow_mark_as_read and not (found and not was_unread):
             return {
                 "text_body": notice_title,
                 "notice_title": notice_title,
                 "pdf_bytes": b"",
                 "attachments": [],
                 "marked_as_read": False,
-                "was_unread": True,
+                "was_unread": was_unread,
+                "read_state_known": found,
                 "skipped": True,
             }
 
         marked_as_read = False
+        read_endpoint_called = False
         try:
             read_resp = await self._request(
                 "POST",
                 f"/students/{{student_id}}/noticeboard/read/{event_code}/{pub_id}/101",
             )
+            read_endpoint_called = True
             item_data = read_resp.json().get("item") or {}
             text_body = str(item_data.get("cntText") or item_data.get("title") or "").strip()
             marked_as_read = was_unread
         except Exception:
             pass
+
+        if read_endpoint_called:
+            # The remote read state may have changed: drop the cached noticeboard.
+            self.invalidate_cache()
 
         if not text_body:
             text_body = notice_title
@@ -624,5 +725,6 @@ class SpaggiariClient:
             "attachments": downloaded,
             "marked_as_read": marked_as_read,
             "was_unread": was_unread,
+            "read_state_known": True,
             "skipped": False,
         }

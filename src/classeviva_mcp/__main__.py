@@ -11,7 +11,7 @@ from pathlib import Path
 from classeviva_mcp import __version__
 from classeviva_mcp.classroom_ical import validate_ical_url
 from classeviva_mcp.client import ClasseVivaError, SpaggiariClient
-from classeviva_mcp.credentials import CredentialStore
+from classeviva_mcp.credentials import CredentialStore, StoredCredentials
 from classeviva_mcp.server import mcp
 
 
@@ -94,6 +94,14 @@ async def _cmd_login(args: argparse.Namespace) -> int:
     print("  o Genitore (G...). Le credenziali restano sul tuo computer.")
     print()
 
+    # Fail fast if there is no secure place to store the credentials: better
+    # to know before typing the password than after.
+    try:
+        backend = store.probe_storage()
+    except RuntimeError as exc:
+        print(f"Errore: {exc}", file=sys.stderr)
+        return 1
+
     username = input("1. Email o Codice Utente ClasseViva: ").strip()
     if not username:
         print("Errore: utente vuoto.", file=sys.stderr)
@@ -114,6 +122,23 @@ async def _cmd_login(args: argparse.Namespace) -> int:
             print(f"Errore link iCal: {exc}", file=sys.stderr)
             return 1
 
+    # Validate the credentials against Spaggiari BEFORE storing them: a wrong
+    # password must never end up in the Keyring or in the fallback file.
+    candidate = StoredCredentials(
+        username=username,
+        password=password,
+        classroom_ical_url=ical_url,
+        source="login",
+    )
+
+    probe_client = SpaggiariClient(store=store, credentials=candidate, persist_session=False)
+    try:
+        profile = await probe_client.get_profile()
+    except ClasseVivaError as exc:
+        print(f"\n[ERRORE LOGIN] {exc}", file=sys.stderr)
+        print("Nessuna credenziale e' stata salvata: la password non era corretta.", file=sys.stderr)
+        return 1
+
     try:
         backend = store.save(username=username, password=password, classroom_ical_url=ical_url)
     except RuntimeError as exc:
@@ -127,13 +152,6 @@ async def _cmd_login(args: argparse.Namespace) -> int:
         if course_name:
             ctx.course_name = course_name
         store.save_student_context(ctx)
-
-    client = SpaggiariClient(store=store)
-    try:
-        profile = await client.get_profile()
-    except ClasseVivaError as exc:
-        print(f"\n[ERRORE LOGIN] {exc}", file=sys.stderr)
-        return 1
 
     backend_label, backend_detail = _credential_backend_label(backend)
     print()

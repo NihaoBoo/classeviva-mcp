@@ -4,6 +4,39 @@ Tutte le modifiche rilevanti sono documentate in questo file.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e il
 progetto adotta [Semantic Versioning](https://semver.org/lang/it/).
 
+## [1.1.3] - 2026-11-08
+
+### Fixed
+
+- **Fail-open sullo stato di lettura delle circolari.** `read_notice_pdf` con
+  `allow_mark_as_read=False` poteva comunque raggiungere l'endpoint
+  `noticeboard/read` se l'elenco della bacheca non era disponibile o la
+  circolare non era presente in elenco: la circolare veniva segnata come letta
+  sul registro senza consenso. Ora lo stato di lettura è verificato con un
+  elenco **sempre aggiornato** (mai dalla cache) e in caso di dubbio si
+  fallisce chiusi: solo metadati, nessuna ricevuta di lettura, nessun
+  download. Il nuovo campo `notice_read_state_known` indica il caso.
+- **`login` non salvava più password non verificate.** Una password sbagliata
+  finiva nel Keyring prima che il login venisse validato. Ora le credenziali
+  vengono prima verificate contro Spaggiari e solo dopo salvate; se il login
+  fallisce non resta nulla nel Keyring né nel file di fallback.
+- **`login` non chiede più la password se non esiste un archivio sicuro.**
+  Viene verificata prima la disponibilità del Keyring (o del fallback DPAPI),
+  così su una macchina senza keyring l'errore arriva subito.
+
+### Changed
+
+- Connessione HTTP riutilizzata: il client mantiene vivo il pool TLS tra una
+  chiamata tool e l'altra, eliminando un handshake TLS per ogni richiesta.
+- Cache breve (60 s) per gli endpoint di sola lettura (voti, agenda, lezioni,
+  assenze, materie, profilo, bacheca): i workflow avanzati non interrogano più
+  Spaggiari due volte per gli stessi dati. La cache viene svuotata dopo ogni
+  modifica di stato remoto.
+- Il prompt `notices_brief` è disponibile anche in modalità personale (non solo
+  read-only): è il prompt che chiede conferma prima di segnare una circolare
+  come letta.
+- `probe_storage` controlla il backend disponibile senza persistere nulla.
+
 ## [1.1.2] - 2026-11-07
 
 ### Added
