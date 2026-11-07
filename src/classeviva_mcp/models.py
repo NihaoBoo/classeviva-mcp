@@ -15,6 +15,14 @@ def today_rome_str() -> str:
     return now_rome().strftime("%Y-%m-%d")
 
 
+def current_school_year_str(dt: datetime | None = None) -> str:
+    """Restituisce l'anno scolastico corrente (es. '2026/2027') in base alla data italiana (inizio 1 settembre)."""
+    d = dt or now_rome()
+    start_year = d.year if d.month >= 9 else d.year - 1
+    return f"{start_year}/{start_year + 1}"
+
+
+
 class StudentProfile(BaseModel):
     ident: str = Field(description="Codice identificativo usato per il login (es. S1234567X o G1234567X)")
     student_id: str = Field(description="ID numerico dello studente usato negli endpoint /students/{id}")
@@ -53,9 +61,17 @@ class StudentContext(BaseModel):
     school_class: str = Field(default="", description="Sigla classe e sezione (es. '5AI')")
     course_name: str = Field(default="", description="Indirizzo di studio (es. 'Informatica')")
     register_number: int | None = Field(default=None, description="Numero di elenco sul registro di classe")
-    custom_notes: str = Field(default="", description="Note aggiuntive o preferenze dello studente")
+    custom_notes: str = Field(default="", description="Note aggiuntive o preferenze dello studente (max 1500 caratteri)")
+    school_year: str = Field(default="", description="Anno scolastico in cui è stata salvata la classe (es. '2026/2027')")
+    classroom_ical_url: str = Field(default="", description="URL feed segreto .ics di Google Classroom")
     timetable: ClassTimetable | None = Field(default=None, description="Orario settimanale salvato in locale")
+    seen_notice_ids: list[str] = Field(
+        default_factory=list,
+        description="Coda FIFO (max 200) degli ID circolari già visti, per segnalarli senza nasconderli",
+    )
     updated_at: str = ""
+
+
 
 
 class AgendaItem(BaseModel):
@@ -107,6 +123,9 @@ class NoticeItem(BaseModel):
     publish_date: str
     category: str = ""
     is_read: bool = False
+    seen_by_agent: bool = False
+    status_label: str = "🆕 NUOVA"
     has_attachment: bool = False
     attachment_numbers: list[int] = Field(default_factory=list)
     attachment_filenames: list[str] = Field(default_factory=list)
+

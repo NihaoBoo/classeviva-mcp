@@ -301,7 +301,10 @@ async def test_all_mcp_tools_student_context_scanned_pdf_and_zero_stdout_leak(
             course_name="Informatica",
             register_number=14,
             custom_notes="5AI = Informatica, 5AC = Chimica, 5AM = Meccanica, 5AL = Logistica",
+            classroom_ical_url="https://calendar.google.com/calendar/ical/test/basic.ics",
         )
+        assert store.load_student_context().classroom_ical_url == "https://calendar.google.com/calendar/ical/test/basic.ics"
+
         tt_res = await save_class_timetable(
             school_class="5AI",
             schedule={"Lunedi": [{"hour": 1, "start_time": "08:00", "subject": "Informatica", "room": "Lab 2"}]},
@@ -312,7 +315,14 @@ async def test_all_mcp_tools_student_context_scanned_pdf_and_zero_stdout_leak(
         ctx = await get_today_context()
         assert ctx["profile"]["school_class"] == "5AI"
         assert ctx["student_context"]["register_number"] == 14
+        assert "school_year_status" in ctx
+        assert ctx["school_year_status"]["needs_class_review"] is False
         assert len(ctx["subjects_and_teachers"]) == 1
+
+        # Verify bounded FIFO storage limit for seen_notice_ids (max 200)
+        store.mark_notices_seen([f"id_{i}" for i in range(250)])
+        assert len(store.load_student_context().seen_notice_ids) == 200
+
 
         hw = await get_homework(days_ahead=7)
         assert hw["count"] == 1
@@ -334,6 +344,13 @@ async def test_all_mcp_tools_student_context_scanned_pdf_and_zero_stdout_leak(
 
         notices = await list_notices(query="gita")
         assert notices["count"] == 1
+        assert notices["notices"][0]["status_label"] in ("🆕 NUOVA", "📌 GIÀ VISTA")
+        # Calling list_notices a second time still keeps the notice visible (never hides it)
+        notices_second = await list_notices(query="gita")
+        assert notices_second["count"] == 1
+        assert notices_second["notices"][0]["seen_by_agent"] is True
+        assert notices_second["notices"][0]["status_label"] == "📌 GIÀ VISTA"
+
 
         pdf_res = await read_notice_pdf(notice_id="245", save_pdf=True)
         assert "Barcellona" in pdf_res["text"]

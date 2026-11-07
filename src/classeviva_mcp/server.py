@@ -14,7 +14,14 @@ except ImportError:  # pragma: no cover
 from classeviva_mcp.classroom_ical import fetch_classroom_tasks
 from classeviva_mcp.client import SpaggiariClient
 from classeviva_mcp.credentials import CredentialStore
-from classeviva_mcp.models import ClassTimetable, TimetableSlot, now_rome, today_rome_str
+from classeviva_mcp.models import (
+    ClassTimetable,
+    TimetableSlot,
+    current_school_year_str,
+    now_rome,
+    today_rome_str,
+)
+
 from classeviva_mcp.pdf_utils import (
     extract_attachment_text,
     extract_pdf_text,
@@ -55,15 +62,32 @@ def set_client_for_testing(client: SpaggiariClient, store: CredentialStore | Non
 
 @mcp.tool()
 async def get_today_context() -> dict[str, Any]:
-    """Restituisce la data/ora corrente in Italia (Europe/Rome), il profilo scuola, l'elenco materie/professori
-    e il contesto persistente salvato in locale (classe frequentata es. '5AI', indirizzo, n. registro, orario).
+    """Restituisce la data/ora corrente in Italia (Europe/Rome), l'anno scolastico corrente, il profilo scuola,
+    l'elenco materie/professori e il contesto persistente salvato in locale (classe es. '5AI', indirizzo, orario).
+    Verifica inoltre in automatico se è cambiato l'anno scolastico o la classe sul registro elettronico (es. passaggio da 3AI a 4AI).
     """
     now = now_rome()
+    current_sy = current_school_year_str(now)
     profile = await _client.get_profile()
     student_ctx = _store.load_student_context()
 
-    if not profile.school_class and student_ctx.school_class:
-        profile.school_class = student_ctx.school_class
+    register_class = (profile.school_class or "").strip().upper()
+    saved_class = (student_ctx.school_class or "").strip().upper()
+    saved_sy = student_ctx.school_year or current_sy
+
+    # Detect school-year rollover or register promotion (e.g. 3AI -> 4AI)
+    year_changed = bool(student_ctx.school_year and student_ctx.school_year != current_sy)
+    class_mismatch = bool(
+        register_class
+        and saved_class
+        and register_class[:1].isdigit()
+        and saved_class[:1].isdigit()
+        and register_class[:1] != saved_class[:1]
+    )
+    needs_review = year_changed or class_mismatch
+
+    if not profile.school_class and saved_class:
+        profile.school_class = saved_class
 
     subjects_list: list[dict[str, Any]] = []
     try:
@@ -72,10 +96,26 @@ async def get_today_context() -> dict[str, Any]:
     except Exception:
         pass
 
+    review_hint = None
+    if needs_review:
+        review_hint = (
+            f"Rilevato possibile cambio di anno scolastico ({saved_sy} -> {current_sy}) "
+            f"o di classe sul registro ( salvata='{saved_class}', registro='{register_class}' ). "
+            "Chiedi allo studente se è passato alla nuova classe e aggiorna con `update_student_context`."
+        )
+
     return {
         "today": now.strftime("%Y-%m-%d"),
         "weekday": now.strftime("%A"),
         "current_time_rome": now.strftime("%H:%M"),
+        "school_year": current_sy,
+        "school_year_status": {
+            "current_school_year": current_sy,
+            "saved_school_year": saved_sy,
+            "register_detected_class": register_class or None,
+            "needs_class_review": needs_review,
+            "agent_hint": review_hint,
+        },
         "public_mode_active": PUBLIC_MODE,
         "profile": profile.model_dump(),
         "student_context": student_ctx.model_dump(),
@@ -89,13 +129,15 @@ async def update_student_context(
     course_name: str = "",
     register_number: int | None = None,
     custom_notes: str = "",
+    classroom_ical_url: str = "",
 ) -> dict[str, Any]:
     """Salva in modo persistente sul dispositivo le informazioni dello studente che non sempre compaiono su Spaggiari:
     - `school_class`: sigla classe e sezione (es. '5AI')
     - `course_name`: indirizzo di studio (es. 'Informatica')
     - `register_number`: numero sull'elenco del registro di classe (utile per interrogazioni/sorteggi)
-    - `custom_notes`: preferenze o note aggiuntive.
-    I campi lasciati vuoti mantengono il valore precedente.
+    - `custom_notes`: preferenze o note aggiuntive (max 1500 caratteri)
+    - `classroom_ical_url`: link .ics segreto di Google Classroom (puoi incollarlo direttamente all'agent in chat!).
+    I campi lasciati vuoti mantengono il valore precedente. Può essere chiamato in qualsiasi momento parlando normalmente all'agent.
     """
     ctx = _store.load_student_context()
     if school_class.strip():
@@ -106,12 +148,19 @@ async def update_student_context(
         ctx.register_number = register_number
     if custom_notes.strip():
         ctx.custom_notes = custom_notes.strip()
+    if classroom_ical_url.strip():
+        clean_url = classroom_ical_url.strip()
+        _store.save_classroom_ical_url(clean_url)
+        ctx.classroom_ical_url = clean_url
+    ctx.school_year = current_school_year_str()
 
     saved = _store.save_student_context(ctx)
     return {
         "status": "saved",
         "student_context": saved.model_dump(),
     }
+
+
 
 
 @mcp.tool()
@@ -347,7 +396,9 @@ async def list_notices(
     unread_only: bool = False,
     limit: int = 15,
 ) -> dict[str, Any]:
-    """Elenca e filtra le circolari della bacheca scolastica senza segnarle come lette.
+    """Elenca e filtra le circolari della bacheca scolastica senza segnarle come lette su Spaggiari.
+    Non nasconde le circolari già viste in passato: le mostra tutte nell'elenco contrassegnandole con
+    `status_label` ('🆕 NUOVA' oppure '📌 GIÀ VISTA'), così lo studente può sempre rivederle se se ne dimentica.
     Usa `query` per cercare parole chiave nel titolo/categoria (es. 'gita', 'orario', 'sciopero', '5AI').
     """
     notices = await _client.list_notices(
@@ -355,12 +406,32 @@ async def list_notices(
         unread_only=unread_only,
     )
     capped = notices[: max(1, min(50, limit))]
+
+    ctx = _store.load_student_context()
+    seen_set = set(ctx.seen_notice_ids)
+    new_count = 0
+    already_seen_count = 0
+    for n in capped:
+        already_seen = (n.id in seen_set) or n.is_read
+        n.seen_by_agent = already_seen
+        n.status_label = "📌 GIÀ VISTA" if already_seen else "🆕 NUOVA"
+        if already_seen:
+            already_seen_count += 1
+        else:
+            new_count += 1
+
+    # Mark returned IDs as seen for future diffing (capped at max 200 FIFO)
+    _store.mark_notices_seen([n.id for n in capped])
+
     return {
         "today": today_rome_str(),
         "query": query or None,
         "count": len(capped),
+        "new_count": new_count,
+        "already_seen_count": already_seen_count,
         "notices": [n.model_dump() for n in capped],
     }
+
 
 
 @mcp.tool()
@@ -438,6 +509,7 @@ async def read_notice_pdf(
 
     combined_text = "\n\n".join(extracted_parts).strip()
     is_scanned_image_pdf = bool(has_pdf_bytes and pdf_text_len < 50)
+    _store.mark_notices_seen([str(notice_id)])
 
     return {
         "notice_id": str(notice_id),

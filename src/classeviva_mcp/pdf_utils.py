@@ -109,6 +109,7 @@ def render_scanned_pdf_pages(
             pix.save(str(img_path))
             saved_images.append(str(img_path))
 
+    _prune_attachments_dir(output_dir)
     return saved_images
 
 
@@ -260,13 +261,25 @@ def extract_attachment_text(
     return ""
 
 
+def _prune_attachments_dir(output_dir: Path, max_files: int = 30) -> None:
+    """Mantiene al massimo gli ultimi `max_files` allegati/PNG nella cartella cache per evitare accumulo su disco."""
+    try:
+        files = [f for f in output_dir.iterdir() if f.is_file()]
+        if len(files) > max_files:
+            files.sort(key=lambda f: f.stat().st_mtime)
+            for old_f in files[: len(files) - max_files]:
+                old_f.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def save_attachment_file(
     raw_bytes: bytes,
     notice_id: str,
     output_dir: Path,
     file_name: str = "",
 ) -> Path:
-    """Saves a downloaded circular attachment (.pdf / .docx / .xlsx) to disk."""
+    """Saves a downloaded circular attachment (.pdf / .docx / .xlsx) to disk with automatic cache rotation."""
     output_dir.mkdir(parents=True, exist_ok=True)
     safe_id = "".join(c for c in str(notice_id) if c.isalnum() or c in ("-", "_"))
     if file_name:
@@ -276,7 +289,9 @@ def save_attachment_file(
         ext = ".pdf" if raw_bytes.startswith(b"%PDF") else (".docx" if raw_bytes.startswith(b"PK") else ".bin")
         target = output_dir / f"circolare_{safe_id}{ext}"
     target.write_bytes(raw_bytes)
+    _prune_attachments_dir(output_dir)
     return target
+
 
 
 save_pdf_attachment = save_attachment_file

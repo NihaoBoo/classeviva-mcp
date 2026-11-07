@@ -11,9 +11,12 @@ from typing import Any
 import keyring
 from keyring.errors import KeyringError
 
-from classeviva_mcp.models import StudentContext, today_rome_str
+from classeviva_mcp.models import StudentContext, current_school_year_str, today_rome_str
 
 SERVICE_NAME = "classeviva-mcp"
+MAX_SEEN_NOTICES = 200
+MAX_CUSTOM_NOTES_CHARS = 1500
+
 
 
 def _user_data_dir() -> Path:
@@ -94,7 +97,26 @@ class CredentialStore:
         self._write_private_json(self.fallback_file, payload)
         return "file"
 
+    def save_classroom_ical_url(self, url: str) -> None:
+        """Salva o aggiorna l'URL iCal di Classroom sia nel portachiavi sia nel contesto studente."""
+        clean = url.strip()
+        try:
+            keyring.set_password(SERVICE_NAME, "classroom_ical_url", clean)
+        except Exception:
+            pass
+        if self.fallback_file.exists():
+            try:
+                data = json.loads(self.fallback_file.read_text(encoding="utf-8"))
+                data["classroom_ical_url"] = clean
+                self._write_private_json(self.fallback_file, data)
+            except Exception:
+                pass
+        ctx = self.load_student_context()
+        ctx.classroom_ical_url = clean
+        self.save_student_context(ctx)
+
     def load(self) -> StoredCredentials:
+
         """Loads credentials following priority: env -> keyring -> fallback file."""
         env_user = os.getenv("CLASSEVIVA_USER", "").strip()
         env_pass = os.getenv("CLASSEVIVA_PASSWORD", "").strip()
@@ -115,7 +137,8 @@ class CredentialStore:
         try:
             kr_user = keyring.get_password(SERVICE_NAME, "username") or ""
             kr_pass = keyring.get_password(SERVICE_NAME, "password") or ""
-            kr_ical = env_ical or (keyring.get_password(SERVICE_NAME, "classroom_ical_url") or "")
+            ctx_ical = self.load_student_context().classroom_ical_url
+            kr_ical = env_ical or (keyring.get_password(SERVICE_NAME, "classroom_ical_url") or "") or ctx_ical
             kr_gtok = env_gtok or (keyring.get_password(SERVICE_NAME, "google_access_token") or "")
             kr_prof = env_prof or (keyring.get_password(SERVICE_NAME, "preferred_profile") or "")
             if kr_user and kr_pass:
@@ -130,20 +153,23 @@ class CredentialStore:
         except (KeyringError, Exception):
             pass
 
+
         if self.fallback_file.exists():
             try:
                 data = json.loads(self.fallback_file.read_text(encoding="utf-8"))
                 if data.get("username") and data.get("password"):
+                    ctx_ical = self.load_student_context().classroom_ical_url
                     return StoredCredentials(
                         username=data["username"],
                         password=data["password"],
-                        classroom_ical_url=env_ical or data.get("classroom_ical_url", ""),
+                        classroom_ical_url=env_ical or data.get("classroom_ical_url") or ctx_ical,
                         google_access_token=env_gtok or data.get("google_access_token", ""),
                         preferred_profile=env_prof or data.get("preferred_profile", ""),
                         source="file",
                     )
             except Exception:
                 pass
+
 
         raise RuntimeError(
             "Credenziali ClasseViva non configurate. "
@@ -185,8 +211,28 @@ class CredentialStore:
 
     def save_student_context(self, ctx: StudentContext) -> StudentContext:
         ctx.updated_at = today_rome_str()
+        if not ctx.school_year:
+            ctx.school_year = current_school_year_str()
+        if len(ctx.custom_notes) > MAX_CUSTOM_NOTES_CHARS:
+            ctx.custom_notes = ctx.custom_notes[:MAX_CUSTOM_NOTES_CHARS]
+        if len(ctx.seen_notice_ids) > MAX_SEEN_NOTICES:
+            ctx.seen_notice_ids = ctx.seen_notice_ids[-MAX_SEEN_NOTICES:]
         self._write_private_json(self.context_file, ctx.model_dump())
         return ctx
+
+    def mark_notices_seen(self, notice_ids: list[str]) -> None:
+        """Registra gli ID delle circolari già mostrate/lette mantenendo una coda FIFO limitata a 200 elementi."""
+        if not notice_ids:
+            return
+        ctx = self.load_student_context()
+        existing = list(ctx.seen_notice_ids)
+        for nid in notice_ids:
+            s_nid = str(nid).strip()
+            if s_nid and s_nid not in existing:
+                existing.append(s_nid)
+        ctx.seen_notice_ids = existing[-MAX_SEEN_NOTICES:]
+        self.save_student_context(ctx)
+
 
     @staticmethod
     def _write_private_json(path: Path, data: dict[str, Any]) -> None:
