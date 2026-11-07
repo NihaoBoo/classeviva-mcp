@@ -1,0 +1,50 @@
+# Secrets & Environment (NEVER COMMIT)
+.env
+.env.*
+*.key
+*.enc
+*.db
+*.sqlite
+*.sqlite3
+credentials*.json
+session_cache*.json
+student_context*.json
+client_secret*.json
+token*.json
+
+# Local data, attachments & old prototype folders
+data/
+attachments/
+tmp/
+cache/
+*.pdf
+*.docx
+*.xlsx
+*.png
+.agents/
+app/
+scripts/
+classeviva-mcp/
+main.py
+mcp_server.py
+
+# Python / uv / Packaging / Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.uv/
+uv.lock
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
