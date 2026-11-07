@@ -7,8 +7,8 @@
 Incrocia dati presi direttamente dal registro voti, agenda, compiti, argomenti delle lezioni e circolari della bacheca scolastica con qualsiasi agente AI compatibile MCP.
 
 <p align="center">
-  <a href="https://github.com/NihaoBoo/classeviva-mcp/releases"><img src="https://img.shields.io/badge/version-v1.0.0-blue?style=flat-square" alt="version" height="20"></a>&nbsp;
-  <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="python" height="20"></a>&nbsp;
+  <a href="https://github.com/NihaoBoo/classeviva-mcp/releases"><img src="https://img.shields.io/badge/version-v0.1.0-blue?style=flat-square" alt="version" height="20"></a>&nbsp;
+  <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white" alt="python" height="20"></a>&nbsp;
   <a href="https://github.com/NihaoBoo/classeviva-mcp"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square" alt="platform" height="20"></a>&nbsp;
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/mcp-protocol-brightgreen?style=flat-square" alt="mcp" height="20"></a>&nbsp;
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-yellow?style=flat-square" alt="license" height="20"></a>
@@ -23,7 +23,7 @@ Incrocia dati presi direttamente dal registro voti, agenda, compiti, argomenti d
 ---
 
 ### ✅ Funzionalità Chiave 👀
-* **Zero Password nei File di Configurazione**: credenziali salvate nel **Keyring del sistema operativo** (Gestione Credenziali Windows / Portachiavi macOS / SecretService Linux), compatibile con login tramite **Email personale**, codice Studente (`S...`) o Genitore (`G...`) e rinnovo automatico del token.
+* **Gestione credenziali**: il programma prova a usare il **Keyring del sistema operativo** (Gestione Credenziali Windows / Portachiavi macOS / SecretService Linux). Se il Keyring non è disponibile o fallisce, usa un file JSON locale con password e token in chiaro; i permessi restrittivi sono applicati come best effort. Il token di sessione è inoltre conservato in `session_cache.json`. Non considerare quindi garantito che i segreti restino esclusivamente nel Keyring.
 * **Voti & Target**: medie ponderate, materie insufficienti e calcolo matematico del voto necessario al recupero (`calculate_grade_target`).
 * **Agenda & Compiti**: lettura scadenze, verifiche e interrogazioni (con supporto a Google Classroom tramite feed `.ics` iCal o OAuth2).
 * **Lezioni & Argomenti**: storico degli argomenti spiegati dai docenti per pianificare il ripasso prima delle verifiche.
@@ -149,8 +149,8 @@ Se usi un ambiente che espone i tuoi server MCP in cloud o rete privata (es. ses
 3. **Se il bot è solo per te (Chat privata / DM)**: configura nel tuo bot il filtro sul tuo `OWNER_USER_ID` di Telegram o Discord, così il bot risponde esclusivamente a te.
 4. **Se aggiungi il bot nel gruppo Telegram o server Discord della classe**:
    * Ognuno può avere il proprio bot personale con le proprie chiavi, ma basta che **un solo compagno** tenga attivo il bot nel server perché tutta la classe benefici dei riassunti delle circolari e dell'orario.
-   * Quando il bot è in un canale/gruppo condiviso, imposta la variabile d'ambiente **`CLASSEVIVA_PUBLIC_MODE=true`** nella configurazione di `classeviva-mcp`.
-   * Con `CLASSEVIVA_PUBLIC_MODE=true`, i tool personali (`get_grades`, `calculate_grade_target`, `get_absences`) vengono **disabilitati direttamente nel codice Python**: nessun compagno potrà mai leggere i tuoi voti o le tue assenze (nemmeno provando a ingannare l'AI con prompt injection), mentre chiunque nel gruppo potrà chiedere *"Fai un riassunto delle ultime circolari sulla gita per la 5A e allega il PDF"*.
+   * **Non esporre questa configurazione in un gruppo condiviso o a utenti non fidati.** `CLASSEVIVA_PUBLIC_MODE=true` disabilita soltanto `get_grades`, `calculate_grade_target` e `get_absences`. Gli altri tool continuano a usare l'account personale e possono restituire profilo, identificativi, scuola, classe, materie, professori, orario, note, compiti, lezioni e circolari. La modalità non implementa autenticazione, autorizzazioni per chiamante o isolamento tra utenti.
+   * Per un uso condiviso serve prima una modalità pubblica realmente separata, con dati scolastici pubblici caricati senza credenziali personali e con una allowlist dei tool. Fino ad allora usa il server soltanto in locale o dietro un accesso privato riservato a te.
 
 <details>
 <summary><b>▼ Permessi Bot Discord pre-calcolati (Clicca per espandere)</b></summary>
@@ -184,6 +184,21 @@ Per evitare che la cache locale (`%LOCALAPPDATA%\classeviva-mcp` su Windows o `~
 * **Storico circolari viste (`seen_notice_ids`)**: coda FIFO limitata agli **ultimi 200 ID** (< 4 KB). Le circolari già viste non vengono mai nascoste dalla lista ma solo etichettate con `📌 GIÀ VISTA`, così se te ne dimentichi una resta sempre visibile.
 * **Cartella allegati (`attachments/`)**: rotazione automatica che mantiene su disco solo gli **ultimi 30 file PDF/PNG** scaricati, rimuovendo in automatico quelli più vecchi.
 * **Note contesto studente (`custom_notes`)**: limite massimo di **1.500 caratteri**.
+
+---
+
+## Sicurezza e privacy: limiti verificati nel codice
+
+> **Importante:** questa sezione descrive il comportamento del codice attuale; non rappresenta una certificazione di sicurezza. Non esporre il server a gruppi, utenti non fidati o Internet.
+
+- **`CLASSEVIVA_PUBLIC_MODE` non è una modalità multiutente sicura.** Disabilita soltanto `get_grades`, `calculate_grade_target` e `get_absences`. `get_today_context` continua a restituire il profilo ClasseViva e l'intero contesto locale, che può includere nome, cognome, identificativi, scuola, classe, numero di registro, note, orario e URL segreto del feed Classroom. Anche gli altri tool possono restituire dati collegati all'account configurato.
+- **Il feed Classroom è un URL segreto e viene scaricato senza una protezione SSRF completa.** Il codice accetta URL forniti tramite `update_student_context`, segue i redirect HTTP e non applica una allowlist di host né un blocco esplicito degli indirizzi loopback/reti private. In un server accessibile a chiamanti non fidati questo può consentire richieste verso servizi interni. Non permettere a terzi di invocare questi tool.
+- **I segreti non sono sempre confinati al Keyring.** Se il Keyring fallisce, `credentials.json` contiene password, token Google e URL iCal in chiaro. `session_cache.json` contiene il token di sessione Spaggiari. `student_context.json` contiene a sua volta l'URL iCal segreto. Il programma tenta di applicare permessi `0600` ai file, ma questa protezione è best effort e non equivale a cifratura; su Windows `chmod` non offre la stessa semantica POSIX.
+- **Logout incompleto rispetto ai dati locali.** Il comando `logout` elimina le credenziali dal Keyring, il fallback `credentials.json` e `session_cache.json`, ma non elimina `student_context.json`: l'URL iCal e gli altri dati salvati nel contesto possono quindi rimanere sul dispositivo.
+- **La lettura di una circolare può modificarne lo stato sul registro.** `read_notice_pdf` richiama l'endpoint Spaggiari `noticeboard/read`; il comportamento del servizio remoto può segnare la circolare come letta. `list_notices`, invece, legge l'elenco e aggiorna soltanto il tracciamento locale delle circolari viste dall'agent.
+- **Output diagnostici non completamente anonimi.** `login` stampa l'identificativo dell'account e può stampare scuola e classe; `doctor` può stampare classe o scuola. Non condividere integralmente questi output in issue pubbliche o log accessibili ad altri.
+
+Questi limiti richiedono modifiche al codice, non possono essere risolti soltanto impostando `CLASSEVIVA_PUBLIC_MODE`. Prima di un uso condiviso occorre almeno introdurre autorizzazioni per chiamante, minimizzazione dei dati restituiti, protezione SSRF per i feed, gestione sicura dei segreti e una procedura di logout/cancellazione completa.
 
 ---
 
