@@ -7,7 +7,7 @@
 Incrocia dati presi direttamente dal registro voti, agenda, compiti, argomenti delle lezioni e circolari della bacheca scolastica con qualsiasi agente AI compatibile MCP.
 
 <p align="center">
-  <a href="https://github.com/NihaoBoo/classeviva-mcp/releases"><img src="https://img.shields.io/badge/version-v0.1.0-blue?style=flat-square" alt="version" height="20"></a>&nbsp;
+  <a href="https://github.com/NihaoBoo/classeviva-mcp/releases"><img src="https://img.shields.io/badge/package-0.1.0-blue?style=flat-square" alt="version" height="20"></a>&nbsp;
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white" alt="python" height="20"></a>&nbsp;
   <a href="https://github.com/NihaoBoo/classeviva-mcp"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square" alt="platform" height="20"></a>&nbsp;
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/mcp-protocol-brightgreen?style=flat-square" alt="mcp" height="20"></a>&nbsp;
@@ -39,7 +39,7 @@ Incrocia dati presi direttamente dal registro voti, agenda, compiti, argomenti d
 * **SÌ, e voglio che configuri tutto l'AI in automatico** (uso già Claude Code, Codex, Opencode, Cursor, Antigravity o simili):
   Copia e incolla questo prompt nella chat del tuo agent e poi **salta direttamente al Punto 3**:
   ```text
-  Configura il server MCP da questa repository GitHub (https://github.com/NihaoBoo/classeviva-mcp): installalo con `uv tool install git+https://github.com/NihaoBoo/classeviva-mcp` (oppure clona la repo ed esegui `uv sync`), registralo nel mio file di configurazione MCP usando il percorso assoluto dell'eseguibile, e spiegami come lanciare `classeviva-mcp login` nel terminale per salvare le credenziali nel Keyring di sistema.
+  Configura il server MCP da questa repository GitHub (https://github.com/NihaoBoo/classeviva-mcp): installalo con `uv tool install git+https://github.com/NihaoBoo/classeviva-mcp` (oppure clona la repo ed esegui `uv sync`), registralo nel mio file di configurazione MCP usando il percorso assoluto dell'eseguibile, e spiegami come lanciare `classeviva-mcp login` nel terminale per salvare le credenziali nel Keyring se disponibile e verificare il backend effettivamente utilizzato.
   ```
 
 * **SÌ, ma preferisco configurarlo a mano** 👉 **Procedi al Punto 2**.
@@ -67,7 +67,7 @@ uvx --from git+https://github.com/NihaoBoo/classeviva-mcp classeviva-mcp login
 
 Ti chiederà:
 1. **Email o Codice ClasseViva** (`S...` / `G...`).
-2. **Password** (nascosta mentre digiti, salvata nel portachiavi di sistema).
+2. **Password** (nascosta mentre digiti; salvata nel Keyring se disponibile, altrimenti nel file JSON di fallback descritto nella sezione Sicurezza).
 3. **Classe e Indirizzo** (es. `5A` e `Informatica`).
 4. **Link `.ics` di Google Classroom** *(Opzionale: puoi premere Invio per saltarlo e aggiungerlo dopo parlando in chat con l'AI)*.
 
@@ -111,7 +111,7 @@ Al termine, il comando **`login` stamperà a schermo il blocco JSON già pronto 
 Se hai saltato il link Classroom durante il login iniziale o hai corsi nuovi, **puoi semplicemente incollare il link in chat all'AI**:
 > *"Collega questo calendario Google Classroom ai miei compiti: [LINK.ics]"*
 
-L'AI chiamerà `update_student_context(classroom_ical_url=...)` e salverà il link per sempre senza farti aprire il terminale.
+L'AI chiamerà `update_student_context(classroom_ical_url=...)` e salverà il link localmente. **Il link iCal è un segreto equivalente a una password**: incollandolo in chat lo condividi con il provider AI e il codice attuale lo duplica in `student_context.json`. Non inserirlo in conversazioni condivise o con agent non fidati.
 
 <details open>
 <summary><b>▼ Come reperire il link .ics segreto da Google Calendar</b></summary>
@@ -128,7 +128,7 @@ L'AI chiamerà `update_student_context(classroom_ical_url=...)` e salverà il li
 <details>
 <summary><b>▼ Alternativa per docenti / scuole aperte: OAuth2 (Clicca per espandere)</b></summary>
 
-Se sei un docente o la tua scuola non blocca le app esterne sull'email istituzionale, puoi impostare la variabile d'ambiente `GOOGLE_ACCESS_TOKEN` nel file MCP JSON per interrogare le API REST ufficiali `classroom.googleapis.com`.
+Se sei un docente o la tua scuola non blocca le app esterne sull'email istituzionale, puoi impostare la variabile d'ambiente `GOOGLE_ACCESS_TOKEN` per interrogare le API REST ufficiali `classroom.googleapis.com`. Evita di inserire il token direttamente nel JSON MCP: i valori `env` in quel file sono normalmente memorizzati in chiaro.
 *(Negli istituti superiori la maggior parte degli admin blocca le richieste OAuth degli studenti, per cui il metodo `.ics` sopra è la scelta raccomandata).*
 </details>
 
@@ -141,16 +141,13 @@ Ci sono due modi per usare `classeviva-mcp` fuori casa dal telefono:
 ### Modo 1 — Tramite l'App del tuo Agent o VPS (Senza creare bot)
 Se usi un ambiente che espone i tuoi server MCP in cloud o rete privata (es. sessioni remote di **Antigravity**, **Claude**, **Opencode** o una tua istanza **LibreChat / Open-WebUI** raggiungibile via Tailscale).
 
-### Modo 2 — Tramite un Bot su Telegram o Discord (In DM o in un gruppo)
+### Modo 2 — Tramite un Bot su Telegram o Discord (solo DM privati)
 `classeviva-mcp` fornisce i tool di lettura del registro; per usarlo dentro Telegram o Discord ti basta agganciarlo a un agente che fa da ponte con la chat (come agent menzionati precedentemente o queste altre soluzioni valide **Hermes Agent**, **OpenClaw** o automazioni **n8n**):
 
 1. **Dove tenerlo acceso**: sul tuo PC quando è acceso, su un vecchio telefono Android con **Termux**, oppure gratis 24/7 su una piccola VPS (**Oracle Cloud Free Tier**).
 2. **Quale modello AI usare (anche a costo zero)**: se non hai un abbonamento AI a pagamento, crea una chiave gratuita su **[OpenRouter](https://openrouter.ai)** e usa i modelli `:free` (come Gemini Flash o Llama/DeepSeek free) configurandoli su **Hermes Agent**, **Opencode** o tramite **CC Switch**.
 3. **Se il bot è solo per te (Chat privata / DM)**: configura nel tuo bot il filtro sul tuo `OWNER_USER_ID` di Telegram o Discord, così il bot risponde esclusivamente a te.
-4. **Se aggiungi il bot nel gruppo Telegram o server Discord della classe**:
-   * Ognuno può avere il proprio bot personale con le proprie chiavi, ma basta che **un solo compagno** tenga attivo il bot nel server perché tutta la classe benefici dei riassunti delle circolari e dell'orario.
-   * **Non esporre questa configurazione in un gruppo condiviso o a utenti non fidati.** `CLASSEVIVA_PUBLIC_MODE=true` disabilita soltanto `get_grades`, `calculate_grade_target` e `get_absences`. Gli altri tool continuano a usare l'account personale e possono restituire profilo, identificativi, scuola, classe, materie, professori, orario, note, compiti, lezioni e circolari. La modalità non implementa autenticazione, autorizzazioni per chiamante o isolamento tra utenti.
-   * Per un uso condiviso serve prima una modalità pubblica realmente separata, con dati scolastici pubblici caricati senza credenziali personali e con una allowlist dei tool. Fino ad allora usa il server soltanto in locale o dietro un accesso privato riservato a te.
+4. **Non aggiungere il bot a gruppi Telegram o server Discord condivisi.** Il server non dispone di autenticazione o autorizzazioni per singolo chiamante e `CLASSEVIVA_PUBLIC_MODE` non isola i dati personali. Usalo soltanto in DM privati con un filtro `OWNER_USER_ID` applicato dal bot, oppure tramite una rete privata con accesso riservato. Il filtro del bot è una protezione esterna: non sostituisce controlli di accesso implementati nel server MCP.
 
 <details>
 <summary><b>▼ Permessi Bot Discord pre-calcolati (Clicca per espandere)</b></summary>
@@ -167,7 +164,7 @@ Su [Discord Developer Portal](https://discord.com/developers/applications):
 
 | Tool | Descrizione | Disabilitato in `PUBLIC_MODE`? |
 |---|---|---|
-| `get_today_context` | Data/ora (`Europe/Rome`), anno scolastico, controllo automatico cambio classe (`3A` -> `4A`), materie/professori e orario. | No |
+| `get_today_context` | Data/ora (`Europe/Rome`), profilo, contesto, materie/professori e orario; può includere dati personali anche in `PUBLIC_MODE`. | No |
 | `update_student_context` | Salva o aggiorna classe (`5A`), indirizzo, n. registro, note e **link .ics di Google Classroom**. | No |
 | `save_class_timetable` | Valida e salva in locale l'orario settimanale della classe. | No |
 | `get_homework` | Compiti e consegne dei prossimi N giorni (ClasseViva + Classroom). | No |
