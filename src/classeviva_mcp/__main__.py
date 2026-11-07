@@ -16,8 +16,10 @@ from classeviva_mcp.server import mcp
 
 
 def _build_ready_mcp_config() -> str:
-    """Builds a copy-pasteable JSON snippet using the absolute path of `classeviva-mcp` or `uv`
-    so GUI clients like Claude Desktop or Cursor never fail with `spawn ENOENT`.
+    """Builds a copy-pasteable MCP JSON snippet with absolute paths.
+
+    GUI clients that spawn the server directly cannot resolve bare command names,
+    so we always point to the concrete executable (or to `uv`) for this machine.
     """
     installed_bin = shutil.which("classeviva-mcp")
     pkg_dir = Path(__file__).resolve().parent.parent.parent
@@ -53,7 +55,7 @@ def _build_ready_mcp_config() -> str:
                     "command": uvx_bin,
                     "args": [
                         "--from",
-                        "git+https://github.com/NihaoBoo/classeviva-mcp",
+                        "git+https://github.com/NihaoBoo/classeviva-mcp@stable",
                         "classeviva-mcp",
                     ],
                 }
@@ -69,10 +71,28 @@ def _mask_ident(ident: str) -> str:
     return f"{value[0]}****{value[-4:]}"
 
 
+def _credential_backend_label(backend: str) -> tuple[str, str]:
+    """Returns a friendly name and a short description for the storage backend."""
+    if backend == "keyring":
+        return (
+            "Keyring di sistema",
+            "Gestione Credenziali Windows / Portachiavi macOS / Secret Service Linux",
+        )
+    if backend == "dpapi":
+        return ("Archivio cifrato Windows (DPAPI)", "Protezione legata al tuo account utente")
+    return ("File locale (fallback)", "Attivato esplicitamente con --allow-insecure-plaintext")
+
+
 async def _cmd_login(args: argparse.Namespace) -> int:
     store = CredentialStore(allow_insecure_plaintext=args.allow_insecure_plaintext)
-    print("=== ClasseViva MCP — Login Sicuro (Keyring di Sistema) ===")
-    print("Puoi inserire la tua Email personale oppure il codice Studente (S...) / Genitore (G...).\n")
+    print()
+    print("=" * 64)
+    print("  ClasseViva MCP - Login sicuro")
+    print("=" * 64)
+    print()
+    print("  Inserisci la tua email personale oppure il codice Studente (S...)")
+    print("  o Genitore (G...). Le credenziali restano sul tuo computer.")
+    print()
 
     username = input("1. Email o Codice Utente ClasseViva: ").strip()
     if not username:
@@ -115,17 +135,45 @@ async def _cmd_login(args: argparse.Namespace) -> int:
         print(f"\n[ERRORE LOGIN] {exc}", file=sys.stderr)
         return 1
 
-    print("\n[OK] Login effettuato con successo!")
-    print(f"  • Backend credenziali : {backend.upper()} (nessuna password nel file di config MCP)")
-    print(f"  • Tipo account        : {profile.account_type.upper()} ({_mask_ident(profile.ident)})")
+    backend_label, backend_detail = _credential_backend_label(backend)
+    print()
+    print("=" * 64)
+    print("  LOGIN COMPLETATO")
+    print("=" * 64)
+    print()
+    print(f"  Account    : {profile.account_type.upper()} ({_mask_ident(profile.ident)})")
+    print(f"  Sicurezza  : {backend_label}")
+    print(f"               {backend_detail}")
     if args.verbose:
         if profile.school_name:
-            print(f"  • Istituto rilevato   : {profile.school_name}")
+            print(f"  Istituto   : {profile.school_name}")
         if school_class or profile.school_class:
-            print(f"  • Classe attiva       : {(school_class or profile.school_class).upper()}")
-
-    print("\n--- Incolla questo JSON in Claude Desktop / Cursor / CC Switch ---")
-    print(_build_ready_mcp_config())
+            print(f"  Classe     : {(school_class or profile.school_class).upper()}")
+    print()
+    print("-" * 64)
+    print("  PROSSIMO PASSO: collega il server al tuo client MCP")
+    print("-" * 64)
+    print()
+    print("  1. Copia il blocco JSON qui sotto.")
+    print()
+    print("  2. Incollalo in uno di questi modi:")
+    print("     - Nella configurazione MCP del tuo client (Claude, Cursor,")
+    print("       Codex, Antigravity, Opencode, ...).")
+    print("     - Oppure nella chat del tuo agente AI, scrivendo ad esempio:")
+    print('       "Configura questo server MCP per me."')
+    print()
+    print("  Il JSON contiene il percorso assoluto di questa installazione:")
+    print("  su un altro computer sarà diverso, quindi non riusarlo altrove.")
+    print()
+    print("-" * 64)
+    for line in _build_ready_mcp_config().splitlines():
+        print("  " + line)
+    print("-" * 64)
+    print()
+    print("  Dopo aver salvato la configurazione, riavvia il client e chiedi")
+    print("  all'agente qualcosa inerente al registro, come leggere voti o")
+    print("  agenda, per verificare che funzioni.")
+    print()
     return 0
 
 

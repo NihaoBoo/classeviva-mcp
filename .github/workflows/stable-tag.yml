@@ -1,0 +1,43 @@
+name: Move stable tag
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to point stable at (default: latest release)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  move-stable:
+    if: github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve release tag
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          if [ -z "$TAG" ]; then
+            TAG="${{ inputs.tag }}"
+          fi
+          if [ -z "$TAG" ]; then
+            TAG=$(gh release view --json tagName --jq .tagName)
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - name: Move stable tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          COMMIT=$(git rev-list -n 1 "${{ steps.resolve.outputs.tag }}")
+          git tag -f -a stable -m "Latest stable release: ${{ steps.resolve.outputs.tag }}" "$COMMIT"
+          git push origin refs/tags/stable --force

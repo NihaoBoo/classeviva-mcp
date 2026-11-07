@@ -19,7 +19,7 @@ Please **do not open a public issue** for security problems.
 You will receive an acknowledgement as soon as possible. Please allow reasonable
 time for a fix before public disclosure.
 
-## Security model (v1.1.0)
+## Security model (v1.1.1)
 
 `classeviva-mcp` is a **single-account local connector**. It does not authenticate
 MCP callers and is not a multi-user service. Do not expose it to untrusted users,

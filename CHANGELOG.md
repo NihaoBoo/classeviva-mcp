@@ -4,6 +4,23 @@ Tutte le modifiche rilevanti sono documentate in questo file.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e il
 progetto adotta [Semantic Versioning](https://semver.org/lang/it/).
 
+## [1.1.1] - 2026-11-07
+
+### Added
+
+- Workflow `stable-tag.yml` che sposta il tag mobile `stable` sull'ultima
+  release non prerelease.
+
+### Changed
+
+- `login` mostra un output a sezioni con istruzioni generiche per collegare il
+  server al client MCP o all'agente AI, senza elencare singoli client.
+- Il JSON MCP generato usa il canale `@stable` e spiega che il percorso è
+  specifico della macchina.
+- README: installazione e comandi Classroom distinguono `uvx` (senza
+  installazione permanente) da `uv tool install`, con indicazioni su dove
+  finiscono i file.
+
 ## [1.1.0] - 2026-11-07
 
 ### Added

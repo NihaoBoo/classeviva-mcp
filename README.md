@@ -7,7 +7,7 @@
 Incrocia dati presi direttamente dal registro voti, agenda, compiti, argomenti delle lezioni e circolari della bacheca scolastica con qualsiasi agente AI compatibile MCP.
 
 <p align="center">
-  <a href="https://github.com/NihaoBoo/classeviva-mcp/releases"><img src="https://img.shields.io/badge/package-1.1.0-blue?style=flat-square" alt="version" height="20"></a>&nbsp;
+  <a href="https://github.com/NihaoBoo/classeviva-mcp/releases"><img src="https://img.shields.io/badge/release-v1.1.1-blue?style=flat-square" alt="release" height="20"></a>&nbsp;
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white" alt="python" height="20"></a>&nbsp;
   <a href="https://github.com/NihaoBoo/classeviva-mcp"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square" alt="platform" height="20"></a>&nbsp;
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/mcp-protocol-brightgreen?style=flat-square" alt="mcp" height="20"></a>&nbsp;
@@ -39,7 +39,7 @@ Incrocia dati presi direttamente dal registro voti, agenda, compiti, argomenti d
 * **SÌ, e voglio che configuri tutto l'AI in automatico** (uso già Claude Code, Codex, Opencode, Cursor, Antigravity o simili):
   Copia e incolla questo prompt nella chat del tuo agent e poi **salta direttamente al Punto 3**:
   ```text
-  Configura il server MCP da questa repository GitHub (https://github.com/NihaoBoo/classeviva-mcp): installalo con `uv tool install git+https://github.com/NihaoBoo/classeviva-mcp` (oppure clona la repo ed esegui `uv sync`), registralo nel mio file di configurazione MCP usando il percorso assoluto dell'eseguibile, e spiegami come lanciare `classeviva-mcp login` nel terminale per salvare le credenziali nel Keyring se disponibile e verificare il backend effettivamente utilizzato.
+  Configura il server MCP da questa repository GitHub (https://github.com/NihaoBoo/classeviva-mcp): installalo con `uv tool install git+https://github.com/NihaoBoo/classeviva-mcp@stable` (oppure clona la repo ed esegui `uv sync`), registralo nel mio file di configurazione MCP usando il percorso assoluto dell'eseguibile, e spiegami come lanciare `classeviva-mcp login` nel terminale per salvare le credenziali nel Keyring se disponibile e verificare il backend effettivamente utilizzato.
   ```
 
 * **SÌ, ma preferisco configurarlo a mano** 👉 **Procedi al Punto 2**.
@@ -61,9 +61,13 @@ Incrocia dati presi direttamente dal registro voti, agenda, compiti, argomenti d
 ### Punto 3 — Esegui il login e salva le credenziali (una sola volta)
 Non serve scaricare cartelle a mano. Apri il terminale ed esegui direttamente:
 ```bash
-uvx --from git+https://github.com/NihaoBoo/classeviva-mcp classeviva-mcp login
+uvx --from git+https://github.com/NihaoBoo/classeviva-mcp@stable classeviva-mcp login
 ```
-*(In alternativa, se vuoi installarlo stabilmente sul PC esegui `uv tool install git+https://github.com/NihaoBoo/classeviva-mcp` e poi `classeviva-mcp login`; se invece hai clonato la cartella in locale usa `uv run classeviva-mcp login`).*
+*(In alternativa, se vuoi installarlo stabilmente sul PC esegui `uv tool install git+https://github.com/NihaoBoo/classeviva-mcp@stable` e poi `classeviva-mcp login`; se invece hai clonato la cartella in locale usa `uv run classeviva-mcp login`).*
+
+> **Dove finisce l'installazione?** `uvx` non installa nulla in modo permanente: crea un ambiente temporaneo nella cache di `uv` (es. `%LOCALAPPDATA%\uv\cache` su Windows, `~/.cache/uv` su Linux/macOS) e lo riusa ai comandi successivi. Con `uv tool install` invece il comando `classeviva-mcp` viene installato stabilmente e aggiunto al `PATH`.
+
+> `@stable` punta sempre all'ultima release stabile. Se vuoi bloccare una versione esatta, sostituisci `@stable` con `@v1.1.1`.
 
 Ti chiederà:
 1. **Email o Codice ClasseViva** (`S...` / `G...`).
@@ -74,12 +78,14 @@ Ti chiederà:
 Al termine, il comando **`login` stamperà a schermo il blocco JSON già pronto con i percorsi assoluti del tuo PC** (così eviti errori `spawn uvx ENOENT` su Windows).
 
 ### Punto 4 — Incolla il JSON nel tuo Client AI e parla con l'Agent
-1. Se non l'ha già fatto l'AI al Punto 1, incolla il JSON stampato dal comando `login` nel file di configurazione del tuo client:
-   * **Claude Desktop (Windows)**: `%APPDATA%\Claude\claude_desktop_config.json`
-   * **Cursor**: `~/.cursor/mcp.json`
-   * **Codex**: `~/.codex/config.toml` (o configurazione MCP del client)
-   * **Antigravity**: `mcp_config.json` nelle impostazioni MCP
-   * **Opencode**: `~/.config/opencode/opencode.json`
+1. Se non l'ha già fatto l'AI al Punto 1, incolla il JSON stampato dal comando `login` in uno di questi due modi:
+   * **Nella configurazione MCP del tuo client**:
+     * **Claude Desktop (Windows)**: `%APPDATA%\Claude\claude_desktop_config.json`
+     * **Cursor**: `~/.cursor/mcp.json`
+     * **Codex**: `~/.codex/config.toml` (o configurazione MCP del client)
+     * **Antigravity**: `mcp_config.json` nelle impostazioni MCP
+     * **Opencode**: `~/.config/opencode/opencode.json`
+   * **Oppure nella chat del tuo agente AI**, scrivendo ad esempio: *"Configura questo server MCP per me"* e incollando il JSON.
 
    Esempio del JSON generato:
    ```json
@@ -89,7 +95,7 @@ Al termine, il comando **`login` stamperà a schermo il blocco JSON già pronto 
          "command": "C:\\Users\\<TUO_UTENTE>\\.local\\bin\\uvx.exe",
          "args": [
            "--from",
-           "git+https://github.com/NihaoBoo/classeviva-mcp",
+           "git+https://github.com/NihaoBoo/classeviva-mcp@stable",
            "classeviva-mcp"
          ]
        }
@@ -108,11 +114,19 @@ Al termine, il comando **`login` stamperà a schermo il blocco JSON già pronto 
 
 ## 📅 Collegare Google Classroom
 
-Se hai saltato il link Classroom durante il login iniziale o hai corsi nuovi, **non incollarlo nella chat dell'AI**. Esegui nel terminale:
+Se hai saltato il link Classroom durante il login iniziale o hai corsi nuovi, **non incollarlo nella chat dell'AI**. Esegui nel terminale il comando adatto a come hai installato il server.
 
+**Se usi `uvx` (senza installazione permanente):**
+```bash
+uvx --from git+https://github.com/NihaoBoo/classeviva-mcp@stable classeviva-mcp set-classroom-url
+```
+
+**Se lo hai installato stabilmente con `uv tool install`:**
 ```bash
 classeviva-mcp set-classroom-url
 ```
+
+`uvx` scarica e riusa un ambiente temporaneo nella cache di `uv`, quindi non devi sapere dove finiscono i file: il comando funziona allo stesso modo dalla prima esecuzione in poi. Con `uv tool install` il comando è già nel `PATH` e non serve anteporre `uvx`.
 
 Il comando chiede il link in modo interattivo (oppure accetta l'URL come argomento) e lo salva nel Keyring o nel fallback cifrato. In questo modo il segreto non passa dal provider AI.
 
@@ -195,7 +209,7 @@ Per evitare che la cache locale (`%LOCALAPPDATA%\classeviva-mcp` su Windows o `~
 
 ## Sicurezza e privacy
 
-> **Importante:** questa sezione descrive il comportamento della v1.1.0; non rappresenta una certificazione di sicurezza. Non esporre il server a gruppi, utenti non fidati o Internet. Dettagli completi in [SECURITY.md](SECURITY.md) e [PRIVACY.md](PRIVACY.md).
+> **Importante:** questa sezione descrive il comportamento della v1.1.1; non rappresenta una certificazione di sicurezza. Non esporre il server a gruppi, utenti non fidati o Internet. Dettagli completi in [SECURITY.md](SECURITY.md) e [PRIVACY.md](PRIVACY.md).
 
 - **`CLASSEVIVA_READ_ONLY_MODE` (alias `CLASSEVIVA_PUBLIC_MODE`) minimizza i dati e disabilita le scritture.** In questa modalità i tool personali e di scrittura (`get_grades`, `get_absences`, `get_homework`, `get_agenda`, `get_lessons`, `calculate_grade_target`, `update_student_context`, `save_class_timetable`) non vengono registrati e le funzioni sollevano `PermissionError`. `get_today_context` restituisce un profilo senza nome, cognome e identificativi, e un contesto senza numero di registro, note o ID delle circolari viste. Resta comunque una modalità per singolo account, **non** un sistema multiutente: il server non autentica i chiamanti.
 - **Il feed Classroom è protetto contro SSRF.** Sono ammessi solo host `calendar.google.com` e `classroom.google.com`, schema HTTPS, porta 443 e risoluzione verso IP pubblici. I redirect vengono seguiti manualmente e rivalidati (massimo 3), la risposta è limitata a 5 MB e `trust_env=False` evita proxy ambientali. Il link si configura solo via CLI (`classeviva-mcp set-classroom-url`) e non viene mai restituito dai tool.
