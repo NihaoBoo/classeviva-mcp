@@ -56,8 +56,10 @@ def _dpapi_crypt(data: bytes, *, decrypt: bool) -> bytes:
     if not _dpapi_available():
         raise RuntimeError("DPAPI è disponibile solo su Windows.")
 
-    crypt32 = ctypes.windll.crypt32
-    kernel32 = ctypes.windll.kernel32
+    # ``ctypes.windll`` exists only on Windows; mypy runs this file on Linux too.
+    windll = getattr(ctypes, "windll")  # noqa: B009 - attribute absent on non-Windows
+    crypt32 = windll.crypt32
+    kernel32 = windll.kernel32
     crypt32.CryptProtectData.argtypes = [
         ctypes.POINTER(_DataBlob),
         wintypes.LPCWSTR,
