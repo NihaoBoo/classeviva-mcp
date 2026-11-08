@@ -4,6 +4,7 @@ import hashlib
 import ipaddress
 import logging
 import socket
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from urllib.parse import urljoin, urlparse
 
@@ -85,17 +86,47 @@ async def _read_limited(response: httpx.Response, max_bytes: int) -> bytes:
     return b"".join(chunks)
 
 
+@dataclass
+class ClassroomFetchResult:
+    """Partial results from Google Classroom plus the reasons some source failed.
+
+    Errors are returned instead of being swallowed: `get_homework` must be able
+    to tell the agent that Classroom is unavailable, otherwise an empty list
+    looks like "no homework" (fail-open).
+    """
+
+    items: list[AgendaItem] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+def _ical_warning(exc: Exception) -> str:
+    """Builds a user-facing warning without leaking the secret feed URL."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if status in (404, 410):
+            return (
+                "Google Classroom (iCal): link non più valido "
+                f"(HTTP {status}). Rigenera l'indirizzo segreto e rilancia "
+                "`classeviva-mcp set-classroom-url`."
+            )
+        return f"Google Classroom (iCal): feed non raggiungibile (HTTP {status})."
+    return f"Google Classroom (iCal): feed non valido ({type(exc).__name__})."
+
+
 async def fetch_classroom_tasks(
     ical_url: str = "",
     google_access_token: str = "",
     start_date: str | None = None,
     end_date: str | None = None,
-) -> list[AgendaItem]:
+) -> ClassroomFetchResult:
     """Dual-mode Google Classroom fetcher:
     1. If `google_access_token` (OAuth2) is provided, queries the Classroom API.
     2. If `ical_url` (.ics secret link) is provided, fetches and parses VEVENT deadlines.
+
+    Never raises for a single failing source: returns the items that worked and
+    a `warnings` list describing what failed (without the URL or token).
     """
-    results: list[AgendaItem] = []
+    result = ClassroomFetchResult()
     if google_access_token.strip():
         try:
             oauth_items = await fetch_classroom_oauth_tasks(
@@ -103,9 +134,12 @@ async def fetch_classroom_tasks(
                 start_date=start_date,
                 end_date=end_date,
             )
-            results.extend(oauth_items)
+            result.items.extend(oauth_items)
         except Exception as exc:  # noqa: BLE001 - degraded mode, never leak token/URL
             logger.warning("Classroom OAuth non disponibile: %s", type(exc).__name__)
+            result.warnings.append(
+                f"Google Classroom (OAuth): accesso non riuscito ({type(exc).__name__})."
+            )
 
     if ical_url.strip():
         try:
@@ -114,11 +148,12 @@ async def fetch_classroom_tasks(
                 start_date=start_date,
                 end_date=end_date,
             )
-            results.extend(ical_items)
+            result.items.extend(ical_items)
         except Exception as exc:  # noqa: BLE001 - degraded mode, never leak token/URL
             logger.warning("Classroom iCal non disponibile: %s", type(exc).__name__)
+            result.warnings.append(_ical_warning(exc))
 
-    return results
+    return result
 
 
 async def fetch_classroom_oauth_tasks(

@@ -7,8 +7,8 @@
 Incrocia dati presi direttamente dal registro voti, agenda, compiti, argomenti delle lezioni e circolari della bacheca scolastica con qualsiasi agente AI compatibile MCP.
 
 <p align="center">
-  <a href="https://github.com/NihaoBoo/classeviva-mcp/releases"><img src="https://img.shields.io/badge/release-v1.2.0-blue?style=flat-square" alt="release" height="20"></a>&nbsp;
-  <a href="https://pypi.org/project/classeviva-mcp/"><img src="https://img.shields.io/badge/pypi-1.2.0-blue?style=flat-square&logo=pypi&logoColor=white" alt="pypi" height="20"></a>&nbsp;
+  <a href="https://github.com/NihaoBoo/classeviva-mcp/releases"><img src="https://img.shields.io/badge/release-v1.2.1-blue?style=flat-square" alt="release" height="20"></a>&nbsp;
+  <a href="https://pypi.org/project/classeviva-mcp/"><img src="https://img.shields.io/badge/pypi-1.2.1-blue?style=flat-square&logo=pypi&logoColor=white" alt="pypi" height="20"></a>&nbsp;
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white" alt="python" height="20"></a>&nbsp;
   <a href="https://github.com/NihaoBoo/classeviva-mcp"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square" alt="platform" height="20"></a>&nbsp;
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/mcp-protocol-brightgreen?style=flat-square" alt="mcp" height="20"></a>&nbsp;
@@ -28,7 +28,7 @@ Incrocia dati presi direttamente dal registro voti, agenda, compiti, argomenti d
 * **Voti & Target**: medie ponderate, materie insufficienti e calcolo matematico del voto necessario al recupero (`calculate_grade_target`).
 * **Agenda & Compiti**: lettura scadenze, verifiche e interrogazioni (con supporto a Google Classroom tramite feed `.ics` iCal o OAuth2).
 * **Lezioni & Argomenti**: storico degli argomenti spiegati dai docenti per pianificare il ripasso prima delle verifiche.
-* **Bacheca & Circolari Intelligenti**: download e parsing `.pdf`, `.docx`, `.xlsx` (con gestione celle unite e colonne verticali per gli orari) e `.zip` con regex di filtraggio per classe (risparmio token fino al 90%), fallback Vision per scansioni e stato `🆕 NUOVA` / `📌 GIÀ VISTA` (senza mai nascondere le circolari già lette).
+* **Bacheca & Circolari Intelligenti**: download e parsing `.pdf`, `.docx`, `.xlsx` (con gestione celle unite e colonne verticali per gli orari) e `.zip` con regex di filtraggio per classe (risparmio token fino al 90%), fallback Vision per scansioni e stato `🆕 NUOVA` / `👀 GIÀ MOSTRATA ALL'AI` / `📌 GIÀ LETTA SUL REGISTRO` (senza mai nascondere le circolari già lette).
 * **Persistenza Locale Anti-Bloat & Cambio Anno Automatico**: cache locale dell'orario e del contesto studente (sigle d'istituto, n. registro), rilevamento automatico del passaggio d'anno scolastico (es. da `3A` a `4A` tramite scheda anagrafica del registro) e tetto massimo automatico sui file salvati.
 
 ---
@@ -40,7 +40,7 @@ Incrocia dati presi direttamente dal registro voti, agenda, compiti, argomenti d
 * **SÌ, e voglio che configuri tutto l'AI in automatico** (uso già Claude Code, Codex, Opencode, Cursor, Antigravity o simili):
   Copia e incolla questo prompt nella chat del tuo agent e poi **salta direttamente al Punto 3**:
   ```text
-  Configura il server MCP da questa repository GitHub (https://github.com/NihaoBoo/classeviva-mcp): installalo con `uv tool install git+https://github.com/NihaoBoo/classeviva-mcp@stable` (oppure clona la repo ed esegui `uv sync`), registralo nel mio file di configurazione MCP usando il percorso assoluto dell'eseguibile, e spiegami come lanciare `classeviva-mcp login` nel terminale per salvare le credenziali nel Keyring se disponibile e verificare il backend effettivamente utilizzato.
+  Configura il server MCP `classeviva-mcp` dal pacchetto PyPI (https://pypi.org/project/classeviva-mcp/): installalo con `uv tool install classeviva-mcp` (oppure eseguilo con `uvx classeviva-mcp`), registralo nel mio file di configurazione MCP usando il percorso assoluto dell'eseguibile, e spiegami come lanciare `classeviva-mcp login` nel terminale per salvare le credenziali nel Keyring se disponibile e verificare il backend effettivamente utilizzato.
   ```
 
 * **SÌ, ma preferisco configurarlo a mano** 👉 **Procedi al Punto 2**.
@@ -70,11 +70,11 @@ Se preferisci la versione sempre aggiornata dal repository:
 ```bash
 uvx --from git+https://github.com/NihaoBoo/classeviva-mcp@stable classeviva-mcp login
 ```
-*(In alternativa, se vuoi installarlo stabilmente sul PC esegui `uv tool install git+https://github.com/NihaoBoo/classeviva-mcp@stable` e poi `classeviva-mcp login`; se invece hai clonato la cartella in locale usa `uv run classeviva-mcp login`).*
+*(In alternativa, se vuoi installarlo stabilmente sul PC esegui `uv tool install classeviva-mcp` e poi `classeviva-mcp login`; se invece hai clonato la cartella in locale usa `uv run classeviva-mcp login`).*
 
 > **Dove finisce l'installazione?** `uvx` non installa nulla in modo permanente: crea un ambiente temporaneo nella cache di `uv` (es. `%LOCALAPPDATA%\uv\cache` su Windows, `~/.cache/uv` su Linux/macOS) e lo riusa ai comandi successivi. Con `uv tool install` invece il comando `classeviva-mcp` viene installato stabilmente e aggiunto al `PATH`.
 
-> `@stable` punta sempre all'ultima release stabile. Se vuoi bloccare una versione esatta, sostituisci `@stable` con `@v1.2.0`.
+> `@stable` punta sempre all'ultima release stabile. Se vuoi bloccare una versione esatta, sostituisci `@stable` con `@v1.2.1`.
 
 > ⚠️ **Computer di scuola o condivisi**
 > `classeviva-mcp` è pensato per **un solo account su un dispositivo personale**. Non usarlo su un PC con account condiviso (`studente`, `lab`, `aula`...): chiunque usi quell'account può aprire il Keyring e leggere le credenziali, e due studenti che fanno `login` si sovrascrivono a vicenda. Anche con un account personale, un amministratore della macchina può accedere al profilo. Se devi usarlo su un computer non tuo, esegui **`logout --purge` prima di uscire**: non servono privilegi di admin. Dettagli in [SECURITY.md](SECURITY.md#computer-pubblici-o-condivisi).
@@ -97,21 +97,18 @@ Al termine, il comando **`login` stamperà a schermo il blocco JSON già pronto 
      * **Opencode**: `~/.config/opencode/opencode.json`
    * **Oppure nella chat del tuo agente AI**, scrivendo ad esempio: *"Configura questo server MCP per me"* e incollando il JSON.
 
-   Esempio del JSON generato:
+   Template generico (i percorsi cambiano da PC a PC; `login` stampa quello esatto per la tua macchina):
    ```json
    {
      "mcpServers": {
        "classeviva": {
-         "command": "C:\\Users\\<TUO_UTENTE>\\.local\\bin\\uvx.exe",
-         "args": [
-           "--from",
-           "git+https://github.com/NihaoBoo/classeviva-mcp@stable",
-           "classeviva-mcp"
-         ]
+         "command": "uvx",
+         "args": ["classeviva-mcp"]
        }
      }
    }
    ```
+   Se hai installato con `uv tool install`, al posto di `uvx` usa il percorso assoluto dell'eseguibile `classeviva-mcp` mostrato da `login`.
 
    **Consiglio per chi usa più agent**: se non hai voglia di sincronizzare a mano gli stessi JSON su ogni tool, puoi usare **[CC Switch](https://github.com/farion1231/cc-switch)**, un progetto open-source su GitHub che centralizza le configurazioni MCP e la gestione dei vari agent harness.
 
@@ -201,16 +198,16 @@ Su [Discord Developer Portal](https://discord.com/developers/applications):
 | Tool | Descrizione | Disabilitato in `READ_ONLY_MODE`? |
 |---|---|---|
 | `get_today_context` | Data/ora (`Europe/Rome`), profilo minimizzato, contesto, materie/professori e orario. | No |
-| `update_student_context` | Salva o aggiorna classe (`5A`), indirizzo, n. registro e note. Il link iCal non si configura da qui. | 🔒 **Sì** |
-| `save_class_timetable` | Valida e salva in locale l'orario settimanale della classe. | 🔒 **Sì** |
-| `get_homework` | Compiti e consegne dei prossimi N giorni (ClasseViva + Classroom). | 🔒 **Sì** |
-| `get_agenda` | Verifiche, interrogazioni, compiti e note tra due date. | 🔒 **Sì** |
+| `update_student_context` | Salva o aggiorna classe (`5 AI` → `5AI`), indirizzo, n. registro e note. Il link iCal non si configura da qui. | 🔒 **Sì** |
+| `save_class_timetable` | Valida e salva **solo in locale** l'orario settimanale della classe: non viene inviato al registro scolastico. | 🔒 **Sì** |
+| `get_homework` | Compiti e consegne dei prossimi N giorni (ClasseViva + Classroom) con `breakdown`, `summary` e `warnings`. | 🔒 **Sì** |
+| `get_agenda` | Verifiche, interrogazioni, compiti e note tra due date; accetta anche `kind='verifiche'`/`'compiti'` e date non valide con warning. | 🔒 **Sì** |
 | `get_lessons` | **Argomenti spiegati dai prof** a lezione per preparare verifiche e recuperi. | 🔒 **Sì** |
-| `list_notices` | Elenca tutte le circolari in bacheca senza nascondere quelle vecchie, marcandole come `🆕 NUOVA` o `📌 GIÀ VISTA`. | No |
+| `list_notices` | Elenca tutte le circolari senza nasconderle, con stato `🆕 NUOVA` / `👀 GIÀ MOSTRATA ALL'AI` / `📌 GIÀ LETTA SUL REGISTRO`, più `total_available`, `truncated` e `summary`. | No |
 | `read_notice_pdf` | Estrae testo da `.pdf`/`.docx`/`.xlsx`/`.zip` filtrando per classe, o renderizza PNG se scansionato. Non segna come letta senza consenso esplicito; in read-only non salva file. | No |
-| `get_grades` | Voti, medie ponderate per materia ed elenco insufficienze (`< 6.0`). | 🔒 **Sì** |
-| `calculate_grade_target` | Calcola quale voto serve nella prossima verifica per arrivare alla media obiettivo. | 🔒 **Sì** |
-| `get_absences` | Assenze, ritardi e uscite anticipate. | 🔒 **Sì** |
+| `get_grades` | Voti, medie ponderate per materia ed elenco insufficienze (`< 6.0`); `overall_average` è `null` se non ci sono voti. | 🔒 **Sì** |
+| `calculate_grade_target` | Calcola quale voto serve nella prossima verifica per arrivare alla media obiettivo; `found=false` se la materia non ha voti. | 🔒 **Sì** |
+| `get_absences` | Assenze, ritardi e uscite anticipate con `unjustified_count` (quelle da giustificare), `justified_count` e `breakdown_by_kind`. | 🔒 **Sì** |
 | `get_snapshot` | **Tutto in una chiamata**: profilo, contesto, materie, voti, assenze, compiti e agenda. Le 5 richieste di rete partono in parallelo. | 🔒 **Sì** |
 
 `CLASSEVIVA_READ_ONLY_MODE=true` (alias retrocompatibile: `CLASSEVIVA_PUBLIC_MODE=true`) non registra i tool personali e di scrittura e fa fallire le funzioni corrispondenti con `PermissionError`. Non è una modalità multiutente: il server non autentica i chiamanti.
@@ -234,7 +231,7 @@ Le risorse marcate *(personal)* seguono la stessa regola dei tool: non vengono r
 
 ### Limiti di Archiviazione Automatici (Zero crescita infinita su disco)
 Per evitare che la cache locale (`%LOCALAPPDATA%\classeviva-mcp` su Windows o `~/.local/share/classeviva-mcp` su Linux/Mac) cresca all'infinito nel tempo:
-* **Storico circolari viste (`seen_notice_ids`)**: coda FIFO limitata agli **ultimi 200 ID** (< 4 KB). Le circolari già viste non vengono mai nascoste dalla lista ma solo etichettate con `📌 GIÀ VISTA`, così se te ne dimentichi una resta sempre visibile.
+* **Storico circolari viste (`seen_notice_ids`)**: coda FIFO limitata agli **ultimi 200 ID** (< 4 KB). Le circolari già viste non vengono mai nascoste dalla lista ma solo etichettate con `👀 GIÀ MOSTRATA ALL'AI` o `📌 GIÀ LETTA SUL REGISTRO`, così se te ne dimentichi una resta sempre visibile.
 * **Cartella allegati (`attachments/`)**: rotazione automatica che mantiene su disco solo gli **ultimi 30 file PDF/PNG** scaricati, rimuovendo in automatico quelli più vecchi.
 * **Note contesto studente (`custom_notes`)**: limite massimo di **1.500 caratteri**.
 
@@ -295,7 +292,7 @@ Il token si risolve in quest'ordine: `--token-file` → variabile `CLASSEVIVA_MC
 
 ## Sicurezza e privacy
 
-> **Importante:** questa sezione descrive il comportamento della v1.2.0; non rappresenta una certificazione di sicurezza. Non esporre il server a gruppi, utenti non fidati o Internet. Dettagli completi in [SECURITY.md](SECURITY.md) e [PRIVACY.md](PRIVACY.md).
+> **Importante:** questa sezione descrive il comportamento della v1.2.1; non rappresenta una certificazione di sicurezza. Non esporre il server a gruppi, utenti non fidati o Internet. Dettagli completi in [SECURITY.md](SECURITY.md) e [PRIVACY.md](PRIVACY.md).
 
 - **`CLASSEVIVA_READ_ONLY_MODE` (alias `CLASSEVIVA_PUBLIC_MODE`) minimizza i dati e disabilita le scritture.** In questa modalità i tool personali e di scrittura (`get_grades`, `get_absences`, `get_homework`, `get_agenda`, `get_lessons`, `calculate_grade_target`, `update_student_context`, `save_class_timetable`) non vengono registrati e le funzioni sollevano `PermissionError`. `get_today_context` restituisce un profilo senza nome, cognome e identificativi, e un contesto senza numero di registro, note o ID delle circolari viste. Resta comunque una modalità per singolo account, **non** un sistema multiutente: il server non autentica i chiamanti.
 - **Il feed Classroom è protetto contro SSRF.** Sono ammessi solo host `calendar.google.com` e `classroom.google.com`, schema HTTPS, porta 443 e risoluzione verso IP pubblici. I redirect vengono seguiti manualmente e rivalidati (massimo 3), la risposta è limitata a 5 MB e `trust_env=False` evita proxy ambientali. Il link si configura solo via CLI (`classeviva-mcp set-classroom-url`) e non viene mai restituito dai tool.

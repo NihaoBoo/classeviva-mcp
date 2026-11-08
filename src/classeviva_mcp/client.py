@@ -381,7 +381,9 @@ class SpaggiariClient:
         for ev in raw_items:
             evt_id = str(ev.get("evtId", ""))
             date_str = str(ev.get("evtDatetimeBegin", ""))[:10]
-            subject = (ev.get("subjectDesc") or ev.get("authorName") or "Generale").strip().title()
+            # Never fall back to the teacher name here: the author is already exposed
+            # separately in `author`, and an agent could mistake it for a subject.
+            subject = (ev.get("subjectDesc") or "").strip().title()
             notes = (ev.get("notes") or "").strip()
             author = (ev.get("authorName") or "").strip().title()
             code = str(ev.get("evtCode", "AGNT"))
@@ -400,7 +402,7 @@ class SpaggiariClient:
                     source="classeviva",
                     kind=kind,
                     subject=subject,
-                    title=notes[:100] if notes else f"{kind.title()} {subject}",
+                    title=notes[:100] if notes else f"{kind.title()} {subject}".strip(),
                     description=notes[:4000],
                     date=date_str,
                     author=author,
@@ -639,6 +641,7 @@ class SpaggiariClient:
                 "notice_title": notice_title,
                 "pdf_bytes": b"",
                 "attachments": [],
+                "attachments_total": len(attachments_meta),
                 "marked_as_read": False,
                 "was_unread": was_unread,
                 "read_state_known": found,
@@ -723,6 +726,7 @@ class SpaggiariClient:
             "notice_title": notice_title,
             "pdf_bytes": primary_bytes,
             "attachments": downloaded,
+            "attachments_total": len(attachments_meta),
             "marked_as_read": marked_as_read,
             "was_unread": was_unread,
             "read_state_known": True,

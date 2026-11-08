@@ -12,7 +12,7 @@ from classeviva_mcp import __version__
 from classeviva_mcp.classroom_ical import validate_ical_url
 from classeviva_mcp.client import ClasseVivaError, SpaggiariClient
 from classeviva_mcp.credentials import CredentialStore, StoredCredentials
-from classeviva_mcp.server import mcp
+from classeviva_mcp.server import _normalize_class_code, mcp
 
 
 def _build_ready_mcp_config() -> str:
@@ -55,7 +55,7 @@ def _build_ready_mcp_config() -> str:
                     "command": uvx_bin,
                     "args": [
                         "--from",
-                        "git+https://github.com/NihaoBoo/classeviva-mcp@stable",
+                        "classeviva-mcp",
                         "classeviva-mcp",
                     ],
                 }
@@ -113,6 +113,12 @@ async def _cmd_login(args: argparse.Namespace) -> int:
         return 1
 
     school_class = input("3. La tua Classe e Sezione [es. 5AI, premi Invio per configurarla dopo]: ").strip()
+    if school_class:
+        try:
+            school_class = _normalize_class_code(school_class)
+        except ValueError as exc:
+            print(f"Errore classe: {exc}", file=sys.stderr)
+            return 1
     course_name = input("4. Indirizzo di studio [es. Informatica, premi Invio per saltare]: ").strip()
     ical_url = input("5. Link .ics Google Classroom [Opzionale, premi Invio per saltare]: ").strip()
     if ical_url:
@@ -148,7 +154,7 @@ async def _cmd_login(args: argparse.Namespace) -> int:
     if school_class or course_name:
         ctx = store.load_student_context()
         if school_class:
-            ctx.school_class = school_class.upper()
+            ctx.school_class = school_class
         if course_name:
             ctx.course_name = course_name
         store.save_student_context(ctx)
@@ -169,30 +175,21 @@ async def _cmd_login(args: argparse.Namespace) -> int:
             print(f"  Classe     : {(school_class or profile.school_class).upper()}")
     print()
     print("-" * 64)
-    print("  PROSSIMO PASSO: collega il server al tuo client MCP")
+    print("  CONFIGURAZIONE MCP")
     print("-" * 64)
     print()
     print("  1. Copia il blocco JSON qui sotto.")
+    print("  2. Incollalo nella configurazione MCP del tuo client,")
+    print("     oppure nella chat del tuo agente AI chiedendo di")
+    print("     configurare il server.")
     print()
-    print("  2. Incollalo in uno di questi modi:")
-    print("     - Nella configurazione MCP del tuo client (Claude, Cursor,")
-    print("       Codex, Antigravity, Opencode, ...).")
-    print("     - Oppure nella chat del tuo agente AI, scrivendo ad esempio:")
-    print('       "Configura questo server MCP per me."')
-    print()
-    print("  Il JSON contiene il percorso assoluto di questa installazione:")
-    print("  su un altro computer sarà diverso, quindi non riusarlo altrove.")
+    print("  Il JSON è specifico di questo computer: su un'altra")
+    print("  macchina esegui di nuovo `login` per ottenerne uno valido.")
     print()
     print("-" * 64)
     for line in _build_ready_mcp_config().splitlines():
         print("  " + line)
     print("-" * 64)
-    print()
-    print("  Dopo aver salvato la configurazione, riavvia il client e chiedi")
-    print("  all'agente qualcosa inerente al registro, come leggere voti o")
-    print("  agenda, per verificare che funzioni.")
-    print()
-    print("  Computer condiviso o di scuola? Esegui `logout --purge` prima di uscire.")
     print()
     return 0
 

@@ -121,7 +121,9 @@ class AgendaItem(BaseModel):
     id: str
     source: str = Field(description="'classeviva', 'classroom_ical' oppure 'classroom_oauth'")
     kind: str = Field(description="'homework' | 'exam' | 'note' | 'assignment'")
-    subject: str
+    subject: str = Field(
+        description="Materia dell'evento. Vuoto se Spaggiari non la fornisce: il docente è in `author`, non qui."
+    )
     title: str
     description: str = ""
     date: str = Field(description="Data dell'evento o scadenza in formato YYYY-MM-DD (Europe/Rome)")

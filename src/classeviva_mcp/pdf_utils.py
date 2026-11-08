@@ -6,6 +6,7 @@ import re
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import openpyxl
 import pymupdf
@@ -27,6 +28,67 @@ MAX_XLSX_ROWS = 500
 MAX_XLSX_COLS = 50
 MAX_XLSX_SHEETS = 20
 MAX_ZIP_DEPTH = 1
+
+# Header of a class grid inside a timetable PDF, e.g. "5 AI - Settimana 8, Settimana 30".
+CLASS_HEADER_RE = re.compile(r"\b([1-5])\s*([A-Z]{1,4})\s*-\s*Settimana", re.IGNORECASE)
+
+
+def _page_class_regions(page: Any) -> list[tuple[float, float, str]]:
+    """Finds the class grids laid out on a timetable page.
+
+    A single PDF page often stacks several class timetables (one per class),
+    each introduced by a header like ``5 AI - Settimana 8, Settimana 30``.
+    Returns ``(y_top, y_bottom, class_code)`` for every grid found, ordered
+    top to bottom.
+
+    Returns an empty list when the page has fewer than two distinct headers:
+    with a single class the whole page already is that class's timetable, and
+    cutting by region would risk dropping legitimate circular text.
+    """
+    headers: list[tuple[float, str]] = []
+    for block in page.get_text("dict").get("blocks", []):
+        for line in block.get("lines", []):
+            line_text = "".join(span.get("text", "") for span in line.get("spans", []))
+            match = CLASS_HEADER_RE.search(line_text)
+            if match:
+                code = f"{match.group(1)}{match.group(2).upper()}"
+                headers.append((float(line["bbox"][1]), code))
+    if not headers:
+        return []
+
+    # Headers are often duplicated on the same baseline: collapse them.
+    unique: dict[float, str] = {}
+    for y_top, code in headers:
+        unique.setdefault(round(y_top, 1), code)
+    if len(unique) < 2:
+        return []
+
+    ordered = sorted(unique.items())
+    page_height = float(page.rect.height)
+    regions: list[tuple[float, float, str]] = []
+    for index, (y_top, code) in enumerate(ordered):
+        y_bottom = ordered[index + 1][0] if index + 1 < len(ordered) else page_height
+        regions.append((y_top, y_bottom, code))
+    return regions
+
+
+def _text_in_regions(page: Any, regions: list[tuple[float, float]]) -> str:
+    """Returns the text of the page restricted to the given vertical regions."""
+    collected: list[tuple[float, float, str]] = []
+    for block in page.get_text("dict").get("blocks", []):
+        for line in block.get("lines", []):
+            y_top = float(line["bbox"][1])
+            y_bottom = float(line["bbox"][3])
+            line_text = "".join(span.get("text", "") for span in line.get("spans", [])).strip()
+            if not line_text:
+                continue
+            for region_top, region_bottom in regions:
+                if y_top >= region_top - 1 and y_bottom <= region_bottom + 1:
+                    collected.append((y_top, float(line["bbox"][0]), line_text))
+                    break
+    collected.sort(key=lambda item: (item[0], item[1]))
+    return "\n".join(text for _, _, text in collected)
+
 
 
 def build_class_regex(filter_query: str) -> re.Pattern[str] | None:
@@ -63,8 +125,12 @@ def extract_pdf_text(
     max_chars: int = 14000,
 ) -> tuple[str, int, list[int]]:
     """Extracts selectable text from PDF bytes using PyMuPDF.
-    If the PDF has > 2 pages and `filter_keyword` (e.g. '5AI') is provided,
-    applies smart page filtering (always keeping Page 1 + pages matching the tolerant class regex).
+
+    When `filter_keyword` (e.g. '5AI') is provided and the PDF is a class
+    timetable, the extraction is narrowed down to **the grid of that class
+    only**: timetable pages usually stack several classes one after the other,
+    so filtering by page alone would return the other classes as well.
+
     Returns: (extracted_text, total_pages, included_page_numbers_1based)
     """
     if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
@@ -74,24 +140,31 @@ def extract_pdf_text(
 
     rx = build_class_regex(filter_keyword) if filter_keyword.strip() else None
     all_pages: list[tuple[int, str]] = []
+    region_pages: list[tuple[int, str]] = []
     with pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc:
         total_pages = len(doc)
         for idx, page in enumerate(doc):
             if idx >= MAX_PDF_PAGES:
                 break
             all_pages.append((idx + 1, page.get_text("text").strip()))
+            if rx is not None:
+                regions = _page_class_regions(page)
+                if regions:
+                    wanted = [
+                        (top, bottom)
+                        for top, bottom, code in regions
+                        if rx.search(code) or rx.search(code.replace(" ", ""))
+                    ]
+                    if wanted:
+                        region_pages.append((idx + 1, _text_in_regions(page, wanted)))
 
-    if rx is not None and total_pages > 2:
-        matched = [
-            (pno, txt)
-            for pno, txt in all_pages
-            if pno == 1 or rx.search(txt)
-        ]
-        # Only narrow down if at least one page beyond page 1 matched (or page 1 itself matched)
-        if any(rx.search(txt) for _, txt in matched):
-            selected = matched
-        else:
-            selected = all_pages
+    if rx is not None and region_pages:
+        # Class grids found: keep only the requested class.
+        selected = region_pages
+    elif rx is not None and total_pages > 2:
+        # No recognisable class headers: fall back to page-level filtering.
+        matched = [(pno, txt) for pno, txt in all_pages if pno == 1 or rx.search(txt)]
+        selected = matched if any(rx.search(txt) for _, txt in matched) else all_pages
     else:
         selected = all_pages
 

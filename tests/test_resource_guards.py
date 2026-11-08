@@ -49,6 +49,55 @@ def _make_xlsx(rows: int) -> bytes:
     return buffer.getvalue()
 
 
+def _make_timetable_pdf(class_blocks: list[tuple[str, list[str]]]) -> bytes:
+    """Builds a page that stacks several class grids, like the school timetable PDFs."""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    for index, (header, rows) in enumerate(class_blocks):
+        y = 60 + index * 380
+        page.insert_text((205, y), header)
+        for offset, row in enumerate(rows, start=1):
+            page.insert_text((60, y + offset * 16), row)
+    return doc.tobytes()
+
+
+def test_pdf_filter_keeps_only_requested_class_grid() -> None:
+    pdf_bytes = _make_timetable_pdf(
+        [
+            ("5 AI - Settimana 8, Settimana 30", ["Informatica Gen. Lab", "FERRARI A., IOVINO R."]),
+            ("5 AL - Settimana 8, Settimana 30", ["Informatica", "SALETTA S."]),
+        ]
+    )
+
+    text, total_pages, included = extract_pdf_text(pdf_bytes, filter_keyword="5AI")
+
+    assert total_pages == 1
+    assert included == [1]
+    assert "FERRARI A., IOVINO R." in text
+    assert "SALETTA S." not in text
+
+
+def test_pdf_filter_single_class_page_keeps_the_whole_page() -> None:
+    pdf_bytes = _make_timetable_pdf(
+        [("5 AI - Settimana 8, Settimana 30", ["Informatica Gen. Lab", "FERRARI A., IOVINO R."])]
+    )
+
+    text, _, _ = extract_pdf_text(pdf_bytes, filter_keyword="5AI")
+
+    # Only one grid on the page: no region cut, nothing is lost.
+    assert "Informatica Gen. Lab" in text
+    assert "FERRARI A., IOVINO R." in text
+
+
+def test_pdf_filter_without_class_headers_falls_back_to_pages() -> None:
+    pdf_bytes = _make_pdf(4)
+
+    text, total_pages, _ = extract_pdf_text(pdf_bytes, filter_keyword="5AI")
+
+    assert total_pages == 4
+    assert "Pagina 1" in text
+
+
 def test_oversize_pdf_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pdf_utils, "MAX_FILE_BYTES", 16)
     text, pages, included = extract_pdf_text(b"%PDF-1.4" + b"x" * 32)

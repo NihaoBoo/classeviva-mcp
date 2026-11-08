@@ -212,6 +212,15 @@ async def test_all_mcp_tools_student_context_scanned_pdf_and_zero_stdout_leak(
                             "notes": "Verifica scritta su VLAN e Subnetting",
                             "evtCode": "AGNT",
                             "authorName": "BIANCHI",
+                        },
+                        {
+                            # Spaggiari sometimes omits subjectDesc: the teacher name
+                            # must NOT be used as a subject.
+                            "evtId": 11,
+                            "evtDatetimeBegin": "2026-11-10T08:00:00+01:00",
+                            "notes": "Portare il quaderno",
+                            "evtCode": "AGNT",
+                            "authorName": "CARUSO MARISA",
                         }
                     ]
                 },
@@ -330,6 +339,16 @@ async def test_all_mcp_tools_student_context_scanned_pdf_and_zero_stdout_leak(
 
         ag = await get_agenda(kind="exam")
         assert ag["count"] == 1
+        assert ag["events"][0]["subject"] == "Sistemi E Reti"
+        assert ag["events"][0]["author"] == "Bianchi"
+
+        # When subjectDesc is missing the teacher must stay in `author` only.
+        ag_all = await get_agenda()
+        assert ag_all["count"] == 2
+        no_subject = next(e for e in ag_all["events"] if e["id"] == "cvv:11")
+        assert no_subject["subject"] == ""
+        assert no_subject["author"] == "Caruso Marisa"
+        assert no_subject["title"] == "Portare il quaderno"
 
         ls = await get_lessons(subject="Sistemi")
         assert ls["count"] == 1
@@ -345,17 +364,22 @@ async def test_all_mcp_tools_student_context_scanned_pdf_and_zero_stdout_leak(
 
         notices = await list_notices(query="gita")
         assert notices["count"] == 1
-        assert notices["notices"][0]["status_label"] in ("🆕 NUOVA", "📌 GIÀ VISTA")
+        assert notices["notices"][0]["status_label"] == "📌 GIÀ LETTA SUL REGISTRO"
+        assert notices["total_available"] == 1
+        assert notices["truncated"] is False
         # Calling list_notices a second time still keeps the notice visible (never hides it)
         notices_second = await list_notices(query="gita")
         assert notices_second["count"] == 1
         assert notices_second["notices"][0]["seen_by_agent"] is True
-        assert notices_second["notices"][0]["status_label"] == "📌 GIÀ VISTA"
+        assert notices_second["notices"][0]["status_label"] == "📌 GIÀ LETTA SUL REGISTRO"
 
 
         pdf_res = await read_notice_pdf(notice_id="245", save_pdf=True)
         assert "Barcellona" in pdf_res["text"]
         assert pdf_res["filter_keyword_used"] == "5AI"
+        assert pdf_res["notice_title"] is not None
+        assert pdf_res["attachments_total"] >= 1
+        assert pdf_res["saved_pdf_path"] is None or pdf_res["saved_pdf_path"].endswith(".pdf")
 
         # Verify scanned image PDF renders PNG pages for Vision fallback
         scan_res = await read_notice_pdf(notice_id="246", save_pdf=True)

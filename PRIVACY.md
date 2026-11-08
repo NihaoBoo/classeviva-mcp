@@ -81,5 +81,5 @@ la loro informativa.
 
 ## Modifiche
 
-Questa informativa si riferisce alla versione 1.2.0. Le modifiche future saranno
+Questa informativa si riferisce alla versione 1.2.1. Le modifiche future saranno
 registrate in [CHANGELOG.md](CHANGELOG.md).

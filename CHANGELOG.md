@@ -4,6 +4,69 @@ Tutte le modifiche rilevanti sono documentate in questo file.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e il
 progetto adotta [Semantic Versioning](https://semver.org/lang/it/).
 
+## [1.2.1] - 2026-11-08
+
+### Fixed
+
+- **Filtro PDF per classe, non per pagina**: i tabelloni orario impilano più
+  classi nella stessa pagina (es. 5AI in alto e 5AL in basso). Il filtro
+  `filter_keyword` teneva l'intera pagina, restituendo anche i docenti e le aule
+  delle altre classi. Ora ritaglia la sola griglia della classe richiesta
+  (riconoscendo l'intestazione `5 AI - Settimana …`): su un tabellone reale il
+  testo passa da 5.347 a 1.131 caratteri, con **92% di risparmio** e nessun dato
+  estraneo.
+- **Materia dell'agenda presa dal nome del docente**: quando Spaggiari non
+  invia `subjectDesc`, il client usava `authorName` come materia, duplicando il
+  docente (già presente in `author`) e inducendo l'agente a leggere un nome di
+  persona come materia. Ora `subject` resta vuoto e il docente vive solo in
+  `author`.
+- **Google Classroom non fallisce più in silenzio**: se il feed `.ics` o
+  l'accesso OAuth non rispondono, `get_homework` restituisce i risultati parziali
+  e un `warnings` esplicito (link scaduto, HTTP 404/410, feed non valido) invece
+  di un elenco vuoto indistinguibile da "nessun compito".
+- **Elenco materie non più inghiottito**: se l'API materie fallisce,
+  `get_today_context` mantiene il resto del contesto e aggiunge un warning, così
+  un elenco vuoto non viene scambiato per "nessuna materia".
+- **`saved_pdf_path` punta solo a un PDF**: se la circolare contiene anche
+  immagini o altri allegati, il campo non restituisce più il primo file
+  qualsiasi.
+
+### Added
+
+- **Risposte strutturate per modelli deboli**: `get_homework` espone
+  `breakdown` e `summary`; `get_absences` espone `justified_count`,
+  `unjustified_count`, `breakdown_by_kind` e `summary`; `get_grades` espone
+  `average_method` e `summary`; `calculate_grade_target` espone `found`,
+  `achievable_with_one_exam` e `max_grade`.
+- **`get_snapshot` propaga i warning** e segnala la sovrapposizione tra
+  `homework` e `agenda` (`also_in_agenda`, `includes_homework`), evitando che
+  l'agente conti due volte gli stessi impegni.
+- **`list_notices` distingue tre stati**: `🆕 NUOVA`, `👀 GIÀ MOSTRATA ALL'AI`
+  (vista in una lista precedente, non letta sul registro) e
+  `📌 GIÀ LETTA SUL REGISTRO`. Aggiunge `total_available`, `truncated`,
+  `unread_available` e `summary`: `count` non viene più confuso con il totale.
+- **`read_notice_pdf` espone `notice_title` e `attachments_total`**, così
+  l'agente sa quante risorse esistono anche quando ne legge una sola.
+
+### Changed
+
+- **Validazione degli input locali**: `update_student_context` normalizza la
+  classe (`5 AI` → `5AI`) e limita le note a 1.500 caratteri;
+  `save_class_timetable` rifiuta orari non `HH:MM`, ore duplicate nello stesso
+  giorno, classi diverse da quella salvata e caratteri CJK/cinesi inventati
+  dall'AI. L'orario resta **solo in locale** e la risposta lo dichiara con
+  `storage: "local_only"`.
+- **`get_agenda` e `get_lessons`** validano le date (`YYYY-MM-DD`) con fallback
+  e warning invece di restituire un HTTP 404 grezzo; `kind` accetta anche i
+  sinonimi italiani (`verifiche`, `compiti`, `interrogazioni`, `note`).
+- **`get_grades`**: `overall_average` vale `null` quando non ci sono voti (non
+  più `0.0`, che sembrava una media reale).
+- **`calculate_grade_target`**: se la materia non ha voti, `found` è `false` e
+  `required_next_grade` è `null`, non un voto inventato.
+- **Istruzioni agente aggiornate**: l'orario e le note sono descritti come dati
+  privati locali, le assenze da giustificare sono `unjustified_count` (non
+  `total_events`) e i `warnings` vanno riportati allo studente.
+
 ## [1.2.0] - 2026-11-08
 
 ### Added
