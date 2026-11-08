@@ -4,6 +4,33 @@ Tutte le modifiche rilevanti sono documentate in questo file.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e il
 progetto adotta [Semantic Versioning](https://semver.org/lang/it/).
 
+## [Unreleased]
+
+### Added
+
+- Workflow `publish-pypi.yml` per la pubblicazione su PyPI tramite Trusted
+  Publishing (OIDC, nessun token a lungo termine salvato in GitHub) con
+  verifica dei metadati tramite `twine check`.
+- URL di progetto (`Homepage`, `Repository`, `Issues`, `Changelog`, `Security`)
+  nei metadati del pacchetto, così la pagina PyPI porta ai link giusti.
+
+### Changed
+
+- Action aggiornate: `actions/checkout@v7`, `actions/setup-python@v7`,
+  `astral-sh/setup-uv@v10.3.3`, `github/codeql-action@v4` (CodeQL v3 va in
+  deprecazione a dicembre 2026).
+- README: sezione dedicata all'installazione da PyPI e badge del pacchetto.
+
+### Infra
+
+- Ruleset `main-integrity`: divieto di force-push e di cancellazione di `main`,
+  cronologia lineare obbligatoria.
+- Ruleset `release-tag-creation` / `release-tag-immutability`: i tag `v*` non
+  possono essere creati da altri e, una volta pubblicati, non possono essere
+  spostati o cancellati. Il tag `stable` resta mobile per il workflow.
+- Dependabot Security Updates abilitati.
+- Firma SSH attiva per i commit e i tag locali.
+
 ## [1.1.3] - 2026-11-08
 
 ### Fixed
