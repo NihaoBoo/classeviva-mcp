@@ -7,8 +7,8 @@
 Incrocia dati presi direttamente dal registro voti, agenda, compiti, argomenti delle lezioni e circolari della bacheca scolastica con qualsiasi agente AI compatibile MCP.
 
 <p align="center">
-  <a href="https://github.com/NihaoBoo/classeviva-mcp/releases"><img src="https://img.shields.io/badge/release-v1.1.3-blue?style=flat-square" alt="release" height="20"></a>&nbsp;
-  <a href="https://pypi.org/project/classeviva-mcp/"><img src="https://img.shields.io/badge/pypi-1.1.3-blue?style=flat-square&logo=pypi&logoColor=white" alt="pypi" height="20"></a>&nbsp;
+  <a href="https://github.com/NihaoBoo/classeviva-mcp/releases"><img src="https://img.shields.io/badge/release-v1.2.0-blue?style=flat-square" alt="release" height="20"></a>&nbsp;
+  <a href="https://pypi.org/project/classeviva-mcp/"><img src="https://img.shields.io/badge/pypi-1.2.0-blue?style=flat-square&logo=pypi&logoColor=white" alt="pypi" height="20"></a>&nbsp;
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white" alt="python" height="20"></a>&nbsp;
   <a href="https://github.com/NihaoBoo/classeviva-mcp"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square" alt="platform" height="20"></a>&nbsp;
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/mcp-protocol-brightgreen?style=flat-square" alt="mcp" height="20"></a>&nbsp;
@@ -74,7 +74,7 @@ uvx --from git+https://github.com/NihaoBoo/classeviva-mcp@stable classeviva-mcp 
 
 > **Dove finisce l'installazione?** `uvx` non installa nulla in modo permanente: crea un ambiente temporaneo nella cache di `uv` (es. `%LOCALAPPDATA%\uv\cache` su Windows, `~/.cache/uv` su Linux/macOS) e lo riusa ai comandi successivi. Con `uv tool install` invece il comando `classeviva-mcp` viene installato stabilmente e aggiunto al `PATH`.
 
-> `@stable` punta sempre all'ultima release stabile. Se vuoi bloccare una versione esatta, sostituisci `@stable` con `@v1.1.3`.
+> `@stable` punta sempre all'ultima release stabile. Se vuoi bloccare una versione esatta, sostituisci `@stable` con `@v1.2.0`.
 
 > ⚠️ **Computer di scuola o condivisi**
 > `classeviva-mcp` è pensato per **un solo account su un dispositivo personale**. Non usarlo su un PC con account condiviso (`studente`, `lab`, `aula`...): chiunque usi quell'account può aprire il Keyring e leggere le credenziali, e due studenti che fanno `login` si sovrascrivono a vicenda. Anche con un account personale, un amministratore della macchina può accedere al profilo. Se devi usarlo su un computer non tuo, esegui **`logout --purge` prima di uscire**: non servono privilegi di admin. Dettagli in [SECURITY.md](SECURITY.md#computer-pubblici-o-condivisi).
@@ -206,8 +206,26 @@ Su [Discord Developer Portal](https://discord.com/developers/applications):
 | `get_grades` | Voti, medie ponderate per materia ed elenco insufficienze (`< 6.0`). | 🔒 **Sì** |
 | `calculate_grade_target` | Calcola quale voto serve nella prossima verifica per arrivare alla media obiettivo. | 🔒 **Sì** |
 | `get_absences` | Assenze, ritardi e uscite anticipate. | 🔒 **Sì** |
+| `get_snapshot` | **Tutto in una chiamata**: profilo, contesto, materie, voti, assenze, compiti e agenda. Le 5 richieste di rete partono in parallelo. | 🔒 **Sì** |
 
 `CLASSEVIVA_READ_ONLY_MODE=true` (alias retrocompatibile: `CLASSEVIVA_PUBLIC_MODE=true`) non registra i tool personali e di scrittura e fa fallire le funzioni corrispondenti con `PermissionError`. Non è una modalità multiutente: il server non autentica i chiamanti.
+
+### 📚 Risorse MCP (dati in sola lettura)
+
+Le risorse sono la controparte in sola lettura dei tool: il client le scarica **indirizzate da URI**, può memorizzarle in cache e riusarle senza ripetere la chiamata. Utile quando il dataset è grande e stabile.
+
+| URI | Contenuto |
+|---|---|
+| `classeviva://profile` | Data/ora, profilo, contesto, materie, orario |
+| `classeviva://subjects` | Materie e professori |
+| `classeviva://notices` | Elenco circolari (senza segnarle come lette) |
+| `classeviva://grades` | Voti e medie *(personal)* |
+| `classeviva://absences` | Assenze e ritardi *(personal)* |
+| `classeviva://homework/{days}` | Compiti dei prossimi N giorni *(personal)* |
+| `classeviva://agenda/{start}/{end}` | Agenda scolastica *(personal)* |
+| `classeviva://lessons/{start}/{end}` | Lezioni e argomenti *(personal)* |
+
+Le risorse marcate *(personal)* seguono la stessa regola dei tool: non vengono registrate in `READ_ONLY_MODE`.
 
 ### Limiti di Archiviazione Automatici (Zero crescita infinita su disco)
 Per evitare che la cache locale (`%LOCALAPPDATA%\classeviva-mcp` su Windows o `~/.local/share/classeviva-mcp` su Linux/Mac) cresca all'infinito nel tempo:
@@ -217,9 +235,62 @@ Per evitare che la cache locale (`%LOCALAPPDATA%\classeviva-mcp` su Windows o `~
 
 ---
 
+## 🌐 Come funziona il trasporto (stdio vs HTTP)
+
+Il server MCP può parlare con il tuo client in due modi. Capire la differenza è importante per capire **chi può vedere i tuoi dati**.
+
+### `stdio` — il default, e il più sicuro
+
+Il tuo client MCP **avvia il server come processo figlio** e comunica con lui attraverso due canali locali (input/output del processo). Come una telefonata con il cellulare accanto sul tavolo.
+
+```
+  Claude / Cursor / Opencode
+          |  (pipe stdin/stdout, nessuna porta di rete)
+          v
+  classeviva-mcp serve
+```
+
+- ✅ **Nessuna porta aperta**: nessuno sulla rete può raggiungere il server.
+- ✅ Il server vive e muore con il client: chiudi il client, il server sparisce.
+- ✅ Le credenziali restano nel Keyring dell'utente che ha avviato il processo.
+- ❌ Il server è disponibile **solo su quel computer**: per usarlo dal telefono serve un ponte (come nel [modo smartphone](#-uso-da-smartphone-app-o-bot-telegramdiscord)).
+
+Questo è il modo usato da tutte le istruzioni di installazione qui sopra.
+
+### `streamable-http` — opzionale, per VPS e bot
+
+Il server si mette in ascolto su una **porta TCP** e il client lo raggiunge via HTTP.
+
+```
+  Client MCP remoto
+          |  HTTP + header "Authorization: Bearer <token>"
+          v
+  classeviva-mcp serve --transport streamable-http --port 8765
+```
+
+- ✅ Raggiungibile da altri dispositivi: telefono, VPS, bot, n8n.
+- ✅ **Sempre protetto da un bearer token**: senza l'header `Authorization` il server risponde `401 Unauthorized` e non esegue nulla.
+- ⚠️ Il traffico HTTP **non è cifrato**: se lo usi fuori dal localhost, il token viaggia in chiaro. Usa solo una rete privata fidata o un tunnel (Tailscale, SSH).
+- ⚠️ Chi ha il token può leggere **tutto** il tuo registro: è single-tenant, non multi-utente.
+
+```bash
+# Loopback (solo questo PC), token generato e salvato automaticamente
+classeviva-mcp serve --transport streamable-http
+
+# Con token esplicito
+classeviva-mcp serve --transport streamable-http --token-file ~/.classeviva-token
+
+# Su una VPS, con avviso che il traffico è in chiaro
+classeviva-mcp serve --transport streamable-http --host 0.0.0.0 --port 8765
+```
+
+Il token si risolve in quest'ordine: `--token-file` → variabile `CLASSEVIVA_MCP_TOKEN` → token generato e salvato (cifrato con DPAPI su Windows, `0600` su Linux/macOS) in `mcp_token.json` nella cartella dati. Con `--print-token` lo stampi a schermo.
+
+---
+
 ## Sicurezza e privacy
 
-> **Importante:** questa sezione descrive il comportamento della v1.1.3; non rappresenta una certificazione di sicurezza. Non esporre il server a gruppi, utenti non fidati o Internet. Dettagli completi in [SECURITY.md](SECURITY.md) e [PRIVACY.md](PRIVACY.md).
+> **Importante:** questa sezione descrive il comportamento della v1.2.0; non rappresenta una certificazione di sicurezza. Non esporre il server a gruppi, utenti non fidati o Internet. Dettagli completi in [SECURITY.md](SECURITY.md) e [PRIVACY.md](PRIVACY.md).
 
 - **`CLASSEVIVA_READ_ONLY_MODE` (alias `CLASSEVIVA_PUBLIC_MODE`) minimizza i dati e disabilita le scritture.** In questa modalità i tool personali e di scrittura (`get_grades`, `get_absences`, `get_homework`, `get_agenda`, `get_lessons`, `calculate_grade_target`, `update_student_context`, `save_class_timetable`) non vengono registrati e le funzioni sollevano `PermissionError`. `get_today_context` restituisce un profilo senza nome, cognome e identificativi, e un contesto senza numero di registro, note o ID delle circolari viste. Resta comunque una modalità per singolo account, **non** un sistema multiutente: il server non autentica i chiamanti.
 - **Il feed Classroom è protetto contro SSRF.** Sono ammessi solo host `calendar.google.com` e `classroom.google.com`, schema HTTPS, porta 443 e risoluzione verso IP pubblici. I redirect vengono seguiti manualmente e rivalidati (massimo 3), la risposta è limitata a 5 MB e `trust_env=False` evita proxy ambientali. Il link si configura solo via CLI (`classeviva-mcp set-classroom-url`) e non viene mai restituito dai tool.
@@ -250,10 +321,9 @@ Prima di un uso condiviso servono comunque autorizzazioni per chiamante e isolam
 ---
 
 ## Possibili migliorie future e integrazioni
-* **Risorse MCP**: dataset leggibili in modo dichiarativo (es. `classeviva://lessons/2026-09-01/2026-11-30`) per ridurre il numero di chiamate nei workflow lunghi.
-* **Trasporto HTTP autenticato** (`streamable-http`): oggi il server parla solo su stdio, quindi per usarlo da un VPS o da un bot serve un ponte.
 * **Sincronizzazione multi-MCP consigliata**: guide rapide per combinare `classeviva-mcp` con `notion-mcp`, `obsidian-mcp` o `google-calendar-mcp` (es. creare automaticamente piani di studio su Notion/Obsidian partendo dalle lezioni di ClasseViva).
 * **Statistiche di fine periodo / scrutinio**: confronto storico tra primo e secondo quadrimestre.
+* **OAuth2 completo per Classroom**: al posto della variabile d'ambiente, un flusso di autorizzazione con refresh automatico del token.
 
 ---
 

@@ -286,6 +286,41 @@ def _cmd_logout(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_serve(args: argparse.Namespace) -> None:
+    """Starts the MCP server on the requested transport."""
+    if args.transport == "stdio":
+        mcp.run()
+        return
+
+    from classeviva_mcp.http_server import is_loopback, resolve_token, run_http_server
+
+    store = CredentialStore()
+    token, source = resolve_token(args.token_file or None, store.data_dir)
+
+    if source == "generato automaticamente":
+        store.save_mcp_token(token)
+        print(f"Token generato e salvato in: {store.mcp_token_file}", file=sys.stderr)
+
+    if args.print_token:
+        print(token, flush=True)
+
+    if not is_loopback(args.host):
+        print(
+            "ATTENZIONE: ascolto su un indirizzo raggiungibile dalla rete.\n"
+            "Il traffico HTTP non e' cifrato: il token viaggia in chiaro.\n"
+            "Usalo solo su rete privata fidata o dietro un tunnel (Tailscale, SSH).",
+            file=sys.stderr,
+        )
+
+    run_http_server(
+        mcp,
+        host=args.host,
+        port=args.port,
+        token=token,
+        path=args.mcp_path,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="classeviva-mcp",
@@ -335,7 +370,41 @@ def main() -> None:
         help="Rimuovi anche student_context.json e la cache degli allegati",
     )
 
-    sub.add_parser("serve", help="Avvia il server MCP su trasporto stdio (default)")
+    serve = sub.add_parser(
+        "serve", help="Avvia il server MCP su trasporto stdio (default) o streamable-http"
+    )
+    serve.add_argument(
+        "--transport",
+        choices=("stdio", "streamable-http"),
+        default="stdio",
+        help="Trasporto MCP: stdio (default, locale) oppure streamable-http (richiede un token)",
+    )
+    serve.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Indirizzo di ascolto per streamable-http (default: 127.0.0.1, solo locale)",
+    )
+    serve.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="Porta di ascolto per streamable-http (default: 8765)",
+    )
+    serve.add_argument(
+        "--mcp-path",
+        default="/mcp",
+        help="Percorso HTTP del server MCP (default: /mcp)",
+    )
+    serve.add_argument(
+        "--token-file",
+        default="",
+        help="File con il bearer token (altrimenti CLASSEVIVA_MCP_TOKEN o token generato)",
+    )
+    serve.add_argument(
+        "--print-token",
+        action="store_true",
+        help="Stampa il token bearer usato per streamable-http",
+    )
 
     args = parser.parse_args()
 
@@ -347,6 +416,8 @@ def main() -> None:
         sys.exit(_cmd_set_classroom_url(args))
     elif args.command == "logout":
         sys.exit(_cmd_logout(args))
+    elif args.command == "serve":
+        _cmd_serve(args)
     else:
         mcp.run()
 

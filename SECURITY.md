@@ -19,7 +19,7 @@ Please **do not open a public issue** for security problems.
 You will receive an acknowledgement as soon as possible. Please allow reasonable
 time for a fix before public disclosure.
 
-## Security model (v1.1.3)
+## Security model (v1.2.0)
 
 `classeviva-mcp` is a **single-account local connector**. It does not authenticate
 MCP callers and is not a multi-user service. Do not expose it to untrusted users,
@@ -147,6 +147,40 @@ DPAPI; su Linux/macOS con Keyring non viene creato; con
 
 Se usi variabili d'ambiente, rimuovile anche dalla shell o dalla configurazione
 del client, perché `logout` non le tocca.
+
+### Transport
+
+The default transport is **stdio**: the MCP client spawns the server as a child
+process and talks to it over pipes. No port is opened and no network listener
+exists, so the server is reachable only by whoever can run a process as that
+user.
+
+The optional `streamable-http` transport opens a TCP port and is therefore
+**always protected by a bearer token**:
+
+- the token is required in the `Authorization: Bearer <token>` header; without
+  it the server answers `401 Unauthorized` and runs nothing;
+- the comparison is constant-time (`hmac.compare_digest`);
+- the middleware is implemented at the ASGI level, so it never interferes with
+  the SSE streaming of the transport;
+- the token is resolved from `--token-file`, then `CLASSEVIVA_MCP_TOKEN`, then
+  generated once and stored as `mcp_token.json` in the data directory
+  (DPAPI-encrypted on Windows, `0600` on Linux/macOS);
+- the server binds to `127.0.0.1` by default and prints a loud warning when it
+  is asked to bind to a routable address.
+
+The transport is **single-tenant**: whoever holds the token can read the whole
+registry. The traffic is **not encrypted** — over anything but loopback, use a
+trusted private network or a tunnel (Tailscale, SSH). This is not a
+multi-user system and does not replace per-caller authorization.
+
+### Resources
+
+MCP resources are read-only documents addressed by URI
+(`classeviva://profile`, `classeviva://grades`, ...). They expose exactly the
+same data as the corresponding tools, follow the same `READ_ONLY_MODE`
+rules (the personal ones are not registered in read-only mode), and never
+contain secrets such as the iCal URL or the OAuth token.
 
 ## Hardening checklist for users
 

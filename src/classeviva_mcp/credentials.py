@@ -151,6 +151,7 @@ class CredentialStore:
         self.session_file = self.data_dir / "session_cache.json"
         self.context_file = self.data_dir / "student_context.json"
         self.attachments_dir = self.data_dir / "attachments"
+        self.mcp_token_file = self.data_dir / "mcp_token.json"
 
     # --- Credentials ---
 
@@ -359,6 +360,27 @@ class CredentialStore:
             raise RuntimeError(
                 "Alcune credenziali non sono state rimosse dal Keyring: " + ", ".join(errors)
             )
+
+    # --- MCP HTTP token ---
+
+    def save_mcp_token(self, token: str) -> Path:
+        """Stores the bearer token used by the HTTP transport.
+
+        DPAPI-encrypted on Windows, `0600` on Linux/macOS, same as the rest of
+        the local state.
+        """
+        self._write_private_json(self.mcp_token_file, {"token": token})
+        return self.mcp_token_file
+
+    def load_mcp_token(self) -> str:
+        """Reads the stored bearer token, or an empty string if there is none."""
+        if not self.mcp_token_file.exists():
+            return ""
+        try:
+            data = self._read_private_json(self.mcp_token_file)
+        except Exception:
+            return ""
+        return str(data.get("token") or "")
 
     # --- Session cache ---
 

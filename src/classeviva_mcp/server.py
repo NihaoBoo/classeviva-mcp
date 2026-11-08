@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Any
 
 try:
@@ -456,6 +457,49 @@ async def get_absences() -> dict[str, Any]:
     }
 
 
+async def get_snapshot(days_ahead: int = 7) -> dict[str, Any]:
+    """[DATI PERSONALI] Restituisce in **una sola chiamata** lo stato completo dello studente:
+    profilo, contesto, materie, orario, voti con medie, assenze da giustificare, compiti e agenda.
+
+    Pensato per i workflow avanzati: invece di 6-8 chiamate separate (e altrettante
+    richieste di rete) l'agente ne fa una sola, e le 5 richieste HTTP partono in
+    parallelo. `days_ahead` (1-60, default 7) delimita compiti e agenda.
+    In modalità read-only il tool non viene registrato.
+    """
+    days = max(1, min(60, days_ahead))
+    start = now_rome().strftime("%Y-%m-%d")
+    end = (now_rome() + timedelta(days=days)).strftime("%Y-%m-%d")
+
+    context, grades, absences, homework, agenda = await asyncio.gather(
+        get_today_context(),
+        get_grades(),
+        get_absences(),
+        get_homework(days_ahead=days),
+        get_agenda(start_date=start, end_date=end),
+    )
+    return {
+        "today": start,
+        "range": {"start_date": start, "end_date": end},
+        "profile": context.get("profile"),
+        "student_context": context.get("student_context"),
+        "subjects_and_teachers": context.get("subjects_and_teachers"),
+        "grades": {
+            "overall_average": grades["overall_average"],
+            "subject_averages": grades["subject_averages"],
+            "insufficiencies": grades["insufficiencies"],
+            "grades_count": grades["grades_count"],
+            "grades": grades["grades"],
+        },
+        "absences": {
+            "total_events": absences["total_events"],
+            "unjustified_count": absences["unjustified_count"],
+            "unjustified": absences["unjustified"],
+        },
+        "homework": {"count": homework["count"], "items": homework["items"]},
+        "agenda": {"count": agenda["count"], "events": agenda["events"]},
+    }
+
+
 @mcp.tool()
 async def list_notices(
     query: str = "",
@@ -684,6 +728,97 @@ def notices_brief() -> str:
     )
 
 
+# --- MCP resources ---------------------------------------------------------
+# Resources are the read-only counterpart of tools: the client pulls a
+# document addressed by URI, can cache it and reuse it without paying another
+# tool call. Useful for the large, stable datasets (grades, lessons, agenda).
+
+
+def _parse_days(value: str) -> int:
+    """Parses a bounded integer path parameter (1-60)."""
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        days = 7
+    return max(1, min(60, days))
+
+
+def _parse_date(value: str, fallback: str) -> str:
+    """Validates a YYYY-MM-DD path parameter, falling back when malformed."""
+    clean = (value or "").strip()
+    try:
+        return date.fromisoformat(clean).isoformat()
+    except ValueError:
+        return fallback
+
+
+async def _resource_profile() -> dict[str, Any]:
+    """Data/ora, profilo, contesto studente, materie e orario in un unico documento."""
+    return await get_today_context()
+
+
+async def _resource_subjects() -> dict[str, Any]:
+    """Elenco completo delle materie con i relativi professori."""
+    subjects = await _client.get_subjects()
+    return {"count": len(subjects), "subjects": [s.model_dump() for s in subjects]}
+
+
+async def _resource_notices() -> dict[str, Any]:
+    """Elenco delle circolari (bacheca) senza segnarle come lette."""
+    notices = await _client.list_notices()
+    return {"count": len(notices), "notices": [n.model_dump() for n in notices]}
+
+
+async def _resource_grades() -> dict[str, Any]:
+    """Voti, medie per materia e materie insufficienti."""
+    return await get_grades()
+
+
+async def _resource_absences() -> dict[str, Any]:
+    """Assenze, ritardi e uscite anticipate, con quelle da giustificare."""
+    return await get_absences()
+
+
+async def _resource_homework(days: str) -> dict[str, Any]:
+    """Compiti e consegne dei prossimi `days` giorni (1-60, default 7)."""
+    return await get_homework(days_ahead=_parse_days(days))
+
+
+async def _resource_agenda(start_date: str, end_date: str) -> dict[str, Any]:
+    """Eventi dell'agenda (compiti, verifiche, note) nel periodo indicato."""
+    return await get_agenda(
+        start_date=_parse_date(start_date, today_rome_str()),
+        end_date=_parse_date(end_date, ""),
+    )
+
+
+async def _resource_lessons(start_date: str, end_date: str) -> dict[str, Any]:
+    """Lezioni svolte e argomenti spiegati nel periodo indicato."""
+    return await get_lessons(
+        start_date=_parse_date(start_date, ""),
+        end_date=_parse_date(end_date, today_rome_str()),
+    )
+
+
+mcp.resource(
+    "classeviva://profile",
+    name="profile",
+    title="Profilo, contesto e orario",
+    mime_type="application/json",
+)(_resource_profile)
+mcp.resource(
+    "classeviva://subjects",
+    name="subjects",
+    title="Materie e professori",
+    mime_type="application/json",
+)(_resource_subjects)
+mcp.resource(
+    "classeviva://notices",
+    name="notices",
+    title="Circolari della bacheca",
+    mime_type="application/json",
+)(_resource_notices)
+
 if not READ_ONLY_MODE:
     mcp.tool()(update_student_context)
     mcp.tool()(save_class_timetable)
@@ -693,9 +828,41 @@ if not READ_ONLY_MODE:
     mcp.tool()(get_grades)
     mcp.tool()(calculate_grade_target)
     mcp.tool()(get_absences)
+    mcp.tool()(get_snapshot)
     mcp.prompt()(setup)
     mcp.prompt()(daily_brief)
     mcp.prompt()(recovery_plan)
+    # Personal resources follow the same rule as the personal tools.
+    mcp.resource(
+        "classeviva://grades",
+        name="grades",
+        title="Voti e medie",
+        mime_type="application/json",
+    )(_resource_grades)
+    mcp.resource(
+        "classeviva://absences",
+        name="absences",
+        title="Assenze e ritardi",
+        mime_type="application/json",
+    )(_resource_absences)
+    mcp.resource(
+        "classeviva://homework/{days}",
+        name="homework",
+        title="Compiti e consegne",
+        mime_type="application/json",
+    )(_resource_homework)
+    mcp.resource(
+        "classeviva://agenda/{start_date}/{end_date}",
+        name="agenda",
+        title="Agenda scolastica",
+        mime_type="application/json",
+    )(_resource_agenda)
+    mcp.resource(
+        "classeviva://lessons/{start_date}/{end_date}",
+        name="lessons",
+        title="Lezioni e argomenti",
+        mime_type="application/json",
+    )(_resource_lessons)
 else:
     # In read-only mode only `notices_brief` makes sense: the other prompts
     # drive tools that are intentionally not registered here.

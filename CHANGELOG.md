@@ -4,22 +4,31 @@ Tutte le modifiche rilevanti sono documentate in questo file.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e il
 progetto adotta [Semantic Versioning](https://semver.org/lang/it/).
 
-## [Unreleased]
+## [1.2.0] - 2026-11-08
 
 ### Added
 
-- Workflow `publish-pypi.yml` per la pubblicazione su PyPI tramite Trusted
-  Publishing (OIDC, nessun token a lungo termine salvato in GitHub) con
-  verifica dei metadati tramite `twine check`.
-- URL di progetto (`Homepage`, `Repository`, `Issues`, `Changelog`, `Security`)
-  nei metadati del pacchetto, così la pagina PyPI porta ai link giusti.
+- **Tool `get_snapshot`**: profilo, contesto, materie, voti con medie, assenze
+  da giustificare, compiti e agenda in **una sola chiamata**. Le cinque
+  richieste di rete partono in parallelo: un `daily_brief` + `recovery_plan`
+  passano da 6-8 round-trip a 1.
+- **Risorse MCP**: dataset in sola lettura indirizzati da URI
+  (`classeviva://profile`, `//subjects`, `//notices`, `//grades`, `//absences`,
+  `//homework/{days}`, `//agenda/{start}/{end}`, `//lessons/{start}/{end}`), che
+  il client può scaricare una volta e riusare senza ripetere la chiamata.
+- **Trasporto `streamable-http` protetto da bearer token** per uso remoto
+  (VPS, telefono, bot): `classeviva-mcp serve --transport streamable-http`.
+  Token sempre obbligatorio, confronto in tempo costante, middleware a livello
+  ASGI (non interferisce con lo streaming SSE), binding su `127.0.0.1` di
+  default con avviso esplicito su indirizzi raggiungibili.
 
 ### Changed
 
-- Action aggiornate: `actions/checkout@v7`, `actions/setup-python@v7`,
-  `astral-sh/setup-uv@v10.3.3`, `github/codeql-action@v4` (CodeQL v3 va in
-  deprecazione a dicembre 2026).
-- README: sezione dedicata all'installazione da PyPI e badge del pacchetto.
+- Il token del trasporto HTTP viene risolto da `--token-file`, poi dalla
+  variabile `CLASSEVIVA_MCP_TOKEN`, poi generato e salvato in `mcp_token.json`
+  (cifrato con DPAPI su Windows, `0600` su Linux/macOS).
+- README: sezione dedicata a stdio vs HTTP, tabella delle risorse e del tool
+  `get_snapshot`.
 
 ### Infra
 
@@ -63,6 +72,31 @@ progetto adotta [Semantic Versioning](https://semver.org/lang/it/).
   read-only): è il prompt che chiede conferma prima di segnare una circolare
   come letta.
 - `probe_storage` controlla il backend disponibile senza persistere nulla.
+
+## [1.1.3] - 2026-11-08
+
+### Added
+
+- Workflow `publish-pypi.yml` per la pubblicazione su PyPI tramite Trusted
+  Publishing (OIDC, nessun token a lungo termine salvato in GitHub) con
+  verifica dei metadati tramite `twine check`.
+- URL di progetto (`Homepage`, `Repository`, `Issues`, `Changelog`, `Security`)
+  nei metadati del pacchetto, così la pagina PyPI porta ai link giusti.
+
+### Changed
+
+- Action aggiornate: `actions/checkout@v7`, `actions/setup-python@v7`,
+  `astral-sh/setup-uv@v10.3.3`, `github/codeql-action@v4` (CodeQL v3 va in
+  deprecazione a dicembre 2026).
+- README: sezione dedicata all'installazione da PyPI e badge del pacchetto.
+- `classeviva-mcp` pubblicato su PyPI: da ora `uvx classeviva-mcp login`
+  funziona senza `git` sul PC.
+
+### Fixed
+
+- Il workflow `publish-pypi.yml` resta manuale (`workflow_dispatch`) finché il
+  Trusted Publisher non è registrato su PyPI, così una release non si
+  espone a un upload fallito.
 
 ## [1.1.2] - 2026-11-07
 
