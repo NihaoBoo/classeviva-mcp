@@ -62,15 +62,15 @@ Incrocia dati presi direttamente dal registro voti, agenda, compiti, argomenti d
 ### Punto 3 — Esegui il login e salva le credenziali (una sola volta)
 Non serve scaricare cartelle a mano. Apri il terminale ed esegui direttamente:
 ```bash
+uvx classeviva-mcp login
+```
+*(Il modo più veloce: il pacchetto è su [PyPI](https://pypi.org/project/classeviva-mcp/), quindi non serve avere `git` né toccare alcun URL.)*
+
+Se preferisci la versione sempre aggiornata dal repository:
+```bash
 uvx --from git+https://github.com/NihaoBoo/classeviva-mcp@stable classeviva-mcp login
 ```
 *(In alternativa, se vuoi installarlo stabilmente sul PC esegui `uv tool install git+https://github.com/NihaoBoo/classeviva-mcp@stable` e poi `classeviva-mcp login`; se invece hai clonato la cartella in locale usa `uv run classeviva-mcp login`).*
-
-> **Il modo più veloce, da PyPI.** Se il pacchetto è già pubblicato su PyPI non serve alcun URL GitHub:
-> ```bash
-> uvx classeviva-mcp login
-> ```
-> Stessa installazione, ma senza dover avere `git` sul PC e senza clonare la repository: è l'opzione più comoda per chi non ha familiarità con la riga di comando.
 
 > **Dove finisce l'installazione?** `uvx` non installa nulla in modo permanente: crea un ambiente temporaneo nella cache di `uv` (es. `%LOCALAPPDATA%\uv\cache` su Windows, `~/.cache/uv` su Linux/macOS) e lo riusa ai comandi successivi. Con `uv tool install` invece il comando `classeviva-mcp` viene installato stabilmente e aggiunto al `PATH`.
 
@@ -128,12 +128,17 @@ Se hai saltato il link Classroom durante il login iniziale o hai corsi nuovi, **
 
 **Se usi `uvx` (senza installazione permanente):**
 ```bash
-uvx --from git+https://github.com/NihaoBoo/classeviva-mcp@stable classeviva-mcp set-classroom-url
+uvx classeviva-mcp set-classroom-url
 ```
 
 **Se lo hai installato stabilmente con `uv tool install`:**
 ```bash
 classeviva-mcp set-classroom-url
+```
+
+**Se usi la versione dal repository:**
+```bash
+uvx --from git+https://github.com/NihaoBoo/classeviva-mcp@stable classeviva-mcp set-classroom-url
 ```
 
 `uvx` scarica e riusa un ambiente temporaneo nella cache di `uv`, quindi non devi sapere dove finiscono i file: il comando funziona allo stesso modo dalla prima esecuzione in poi. Con `uv tool install` il comando è già nel `PATH` e non serve anteporre `uvx`.
@@ -308,10 +313,13 @@ Prima di lasciare un PC che non è tuo:
 
 ```bash
 # Se usi uvx (senza installazione permanente)
-uvx --from git+https://github.com/NihaoBoo/classeviva-mcp@stable classeviva-mcp logout --purge
+uvx classeviva-mcp logout --purge
 
 # Se lo hai installato con uv tool install
 classeviva-mcp logout --purge
+
+# Se usi la versione dal repository
+uvx --from git+https://github.com/NihaoBoo/classeviva-mcp@stable classeviva-mcp logout --purge
 ```
 
 Se hai impostato variabili d'ambiente (`CLASSEVIVA_USER`, `CLASSEVIVA_PASSWORD`, `GOOGLE_ACCESS_TOKEN`, `CLASSROOM_ICAL_URL`), rimuovile anche dalla shell o dalla configurazione del client: `logout` non le tocca.
