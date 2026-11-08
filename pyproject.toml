@@ -11,7 +11,7 @@ license = "MIT"
 license-files = ["LICENSE", "NOTICE.md"]
 requires-python = ">=3.11"
 authors = [{ name = "classeviva-mcp contributors" }]
-keywords = ["mcp", "classeviva", "spaggiari", "scuola", "google-classroom", "model-context-protocol"]
+keywords = ["mcp", "classeviva", "spaggiari", "scuola", "google-classroom", "model-context-protocol", "registro-elettronico"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
@@ -43,6 +43,8 @@ dev = [
     "ruff>=0.6.0",
     "mypy>=1.11.0",
     "pip-audit>=2.7.0",
+    "twine>=6.0.0",
+    "build>=1.2.0",
 ]
 
 [project.scripts]
@@ -54,6 +56,8 @@ Repository = "https://github.com/NihaoBoo/classeviva-mcp"
 Issues = "https://github.com/NihaoBoo/classeviva-mcp/issues"
 Changelog = "https://github.com/NihaoBoo/classeviva-mcp/blob/main/CHANGELOG.md"
 Security = "https://github.com/NihaoBoo/classeviva-mcp/blob/main/SECURITY.md"
+"Source Code" = "https://github.com/NihaoBoo/classeviva-mcp"
+"Bug Tracker" = "https://github.com/NihaoBoo/classeviva-mcp/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/classeviva_mcp"]

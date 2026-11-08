@@ -8,6 +8,7 @@ Incrocia dati presi direttamente dal registro voti, agenda, compiti, argomenti d
 
 <p align="center">
   <a href="https://github.com/NihaoBoo/classeviva-mcp/releases"><img src="https://img.shields.io/badge/release-v1.1.3-blue?style=flat-square" alt="release" height="20"></a>&nbsp;
+  <a href="https://pypi.org/project/classeviva-mcp/"><img src="https://img.shields.io/badge/pypi-1.1.3-blue?style=flat-square&logo=pypi&logoColor=white" alt="pypi" height="20"></a>&nbsp;
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white" alt="python" height="20"></a>&nbsp;
   <a href="https://github.com/NihaoBoo/classeviva-mcp"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square" alt="platform" height="20"></a>&nbsp;
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/mcp-protocol-brightgreen?style=flat-square" alt="mcp" height="20"></a>&nbsp;
@@ -64,6 +65,12 @@ Non serve scaricare cartelle a mano. Apri il terminale ed esegui direttamente:
 uvx --from git+https://github.com/NihaoBoo/classeviva-mcp@stable classeviva-mcp login
 ```
 *(In alternativa, se vuoi installarlo stabilmente sul PC esegui `uv tool install git+https://github.com/NihaoBoo/classeviva-mcp@stable` e poi `classeviva-mcp login`; se invece hai clonato la cartella in locale usa `uv run classeviva-mcp login`).*
+
+> **Il modo più veloce, da PyPI.** Se il pacchetto è già pubblicato su PyPI non serve alcun URL GitHub:
+> ```bash
+> uvx classeviva-mcp login
+> ```
+> Stessa installazione, ma senza dover avere `git` sul PC e senza clonare la repository: è l'opzione più comoda per chi non ha familiarità con la riga di comando.
 
 > **Dove finisce l'installazione?** `uvx` non installa nulla in modo permanente: crea un ambiente temporaneo nella cache di `uv` (es. `%LOCALAPPDATA%\uv\cache` su Windows, `~/.cache/uv` su Linux/macOS) e lo riusa ai comandi successivi. Con `uv tool install` invece il comando `classeviva-mcp` viene installato stabilmente e aggiunto al `PATH`.
 
@@ -243,7 +250,8 @@ Prima di un uso condiviso servono comunque autorizzazioni per chiamante e isolam
 ---
 
 ## Possibili migliorie future e integrazioni
-* **Pubblicazione su PyPI**: pacchetto ufficiale per eseguirlo con `uvx classeviva-mcp` senza dover specificare l'URL GitHub.
+* **Risorse MCP**: dataset leggibili in modo dichiarativo (es. `classeviva://lessons/2026-09-01/2026-11-30`) per ridurre il numero di chiamate nei workflow lunghi.
+* **Trasporto HTTP autenticato** (`streamable-http`): oggi il server parla solo su stdio, quindi per usarlo da un VPS o da un bot serve un ponte.
 * **Sincronizzazione multi-MCP consigliata**: guide rapide per combinare `classeviva-mcp` con `notion-mcp`, `obsidian-mcp` o `google-calendar-mcp` (es. creare automaticamente piani di studio su Notion/Obsidian partendo dalle lezioni di ClasseViva).
 * **Statistiche di fine periodo / scrutinio**: confronto storico tra primo e secondo quadrimestre.
 
