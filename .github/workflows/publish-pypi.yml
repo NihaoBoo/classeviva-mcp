@@ -1,8 +1,10 @@
 name: Publish to PyPI
 
 on:
-  release:
-    types: [published]
+  # Manual trigger while the PyPI Trusted Publisher is being configured.
+  # Once the publisher is registered, switch to:
+  #   release:
+  #     types: [published]
   workflow_dispatch:
 
 permissions:
