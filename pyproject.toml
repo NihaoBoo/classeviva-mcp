@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "classeviva-mcp"
-version = "1.2.1"
+version = "1.3.0"
 description = "Server MCP (Model Context Protocol) per il registro elettronico Spaggiari ClasseViva e Google Classroom iCal"
 readme = "README.md"
 license = "MIT"
@@ -33,6 +33,7 @@ dependencies = [
     "pymupdf>=1.24.0",
     "openpyxl>=3.1.2",
     "tzdata>=2024.1",
+    "truststore>=0.10.0",
 ]
 
 [project.optional-dependencies]

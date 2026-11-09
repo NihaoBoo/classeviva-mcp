@@ -16,7 +16,7 @@ except ImportError:  # pragma: no cover
 
 from classeviva_mcp.classroom_ical import fetch_classroom_tasks
 from classeviva_mcp.client import SpaggiariClient
-from classeviva_mcp.credentials import CredentialStore
+from classeviva_mcp.credentials import CredentialStore, StoredCredentials
 from classeviva_mcp.models import (
     ClassTimetable,
     ProfileOut,
@@ -513,8 +513,11 @@ async def get_homework(days_ahead: int = 7) -> dict[str, Any]:
 
     warnings: list[str] = []
     try:
-        creds = _store.load()
-        if creds.classroom_ical_url or creds.google_access_token:
+        creds: StoredCredentials | None = _store.load()
+    except Exception:  # noqa: BLE001 - no stored credentials: Classroom is simply not configured
+        creds = None
+    try:
+        if creds is not None and (creds.classroom_ical_url or creds.google_access_token):
             classroom = await fetch_classroom_tasks(
                 ical_url=creds.classroom_ical_url,
                 google_access_token=creds.google_access_token,

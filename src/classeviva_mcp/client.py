@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 import time
@@ -19,6 +20,7 @@ from classeviva_mcp.models import (
     StudentProfile,
     SubjectTeacher,
 )
+from classeviva_mcp.network import build_async_client, describe_network_error
 
 BASE_URL = "https://web.spaggiari.eu/rest/v1"
 DEFAULT_HEADERS = {
@@ -30,12 +32,55 @@ MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024  # 20 MB per attachment
 MAX_NOTICE_TOTAL_BYTES = 40 * 1024 * 1024  # 40 MB across all attachments of one notice
 ALLOWED_ATTACHMENT_HOSTS = ("cdndoc.spaggiari.eu",)
 CACHE_TTL_SECONDS = 60.0  # short-lived cache for read-only endpoints
+# After Spaggiari rejects a password, do not retry the same credentials for a
+# while: MCP clients call tools in bursts and every call used to trigger a new
+# login, which quickly gets the account temporarily locked by Spaggiari.
+AUTH_FAILURE_COOLDOWN_SECONDS = 600.0
 
 logger = logging.getLogger(__name__)
 
 
 class ClasseVivaError(Exception):
     """Base error for ClasseViva client operations."""
+
+
+class ClasseVivaAuthError(ClasseVivaError):
+    """Spaggiari rejected the credentials (wrong password, wrong user, locked account)."""
+
+
+def _credentials_fingerprint(creds: StoredCredentials) -> str:
+    raw = f"{creds.username}\x00{creds.password}\x00{creds.preferred_profile}".encode()
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _spaggiari_error_text(data: Any, resp: httpx.Response) -> str:
+    """Extracts a short, non-sensitive error description from a login response."""
+    if isinstance(data, dict):
+        parts = [str(data.get(k) or "").strip() for k in ("error", "message", "info")]
+        text = " - ".join(p for p in parts if p)
+        if text:
+            return text[:300]
+    return f"HTTP {resp.status_code}"
+
+
+def explain_login_failure(status_code: int, error_text: str, username: str) -> str:
+    """Maps a Spaggiari login rejection to an actionable Italian message."""
+    lowered = error_text.lower()
+    if "otp" in lowered or "2fa" in lowered:
+        return "Spaggiari richiede verifica OTP/2FA per questo account: non supportata dall'API."
+    hints: list[str] = []
+    if "@" in username:
+        hints.append(
+            "hai usato un'email: se non è collegata all'account riprova con il codice "
+            "utente (S... studente, G... genitore) che trovi nel profilo di ClasseViva"
+        )
+    hints.append("verifica la password accedendo a https://web.spaggiari.eu dal browser")
+    hints.append("se accedi solo con 'Accedi con Google/SPID' imposta prima una password ClasseViva dal portale")
+    hints.append("dopo molti tentativi errati Spaggiari blocca l'accesso: attendi 15-30 minuti")
+    return (
+        f"Credenziali rifiutate da ClasseViva (HTTP {status_code}: {error_text}). "
+        "Suggerimenti: " + "; ".join(hints) + "."
+    )
 
 
 class SpaggiariClient:
@@ -67,6 +112,7 @@ class SpaggiariClient:
         self._last_name: str = ""
         self._semaphore = asyncio.Semaphore(2)
         self._cache: dict[str, tuple[float, Any]] = {}
+        self._auth_failure: tuple[str, float, str] | None = None
         if credentials is None:
             self._load_cached_session()
 
@@ -97,10 +143,9 @@ class SpaggiariClient:
         if self._external_client is not None:
             return self._external_client
         if self._owned_client is None:
-            self._owned_client = httpx.AsyncClient(
+            self._owned_client = build_async_client(
                 timeout=25.0,
                 follow_redirects=False,
-                trust_env=False,
                 limits=httpx.Limits(max_connections=4, max_keepalive_connections=4),
             )
         return self._owned_client
@@ -133,11 +178,32 @@ class SpaggiariClient:
         return "student"
 
     async def _raw_post_login(self, payload: dict[str, Any]) -> httpx.Response:
-        return await self._http().post(
-            f"{BASE_URL}/auth/login",
-            headers=DEFAULT_HEADERS,
-            json=payload,
-        )
+        try:
+            return await self._http().post(
+                f"{BASE_URL}/auth/login",
+                headers=DEFAULT_HEADERS,
+                json=payload,
+            )
+        except httpx.HTTPError as exc:
+            raise ClasseVivaError(describe_network_error(exc)) from exc
+
+    @staticmethod
+    def _parse_login_json(resp: httpx.Response) -> dict[str, Any]:
+        if not resp.content:
+            return {}
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            content_type = resp.headers.get("content-type", "")
+            if "html" in content_type.lower():
+                raise ClasseVivaError(
+                    f"Spaggiari ha risposto con una pagina HTML (HTTP {resp.status_code}) invece "
+                    "che con JSON: quasi sempre è la pagina di blocco di un filtro web o di un "
+                    "captive portal (rete scolastica/Wi-Fi ospiti). Apri web.spaggiari.eu nel "
+                    "browser per verificare, oppure usa un'altra rete."
+                ) from exc
+            raise ClasseVivaError(f"Risposta non valida da Spaggiari (HTTP {resp.status_code}).") from exc
+        return data if isinstance(data, dict) else {}
 
     async def login(self) -> StudentProfile:
         """Logs in using stored credentials (email, S-code, or G-code).
@@ -147,8 +213,22 @@ class SpaggiariClient:
         instead of the persisted ones, and the session is not written to disk
         unless ``persist_session`` is True. This lets the CLI validate a
         password against Spaggiari *before* storing it.
+
+        A rejected password is remembered for ``AUTH_FAILURE_COOLDOWN_SECONDS``
+        so that a burst of tool calls does not lock the account; changing the
+        stored credentials (``login`` again) clears the cooldown immediately.
         """
         creds = self._credentials or self.store.load()
+        fingerprint = _credentials_fingerprint(creds)
+        if self._auth_failure is not None:
+            failed_fp, until, message = self._auth_failure
+            if failed_fp == fingerprint and time.monotonic() < until:
+                raise ClasseVivaAuthError(
+                    message + " (Nuovo tentativo sospeso per evitare il blocco dell'account: "
+                    "esegui `classeviva-mcp login` per aggiornare le credenziali.)"
+                )
+            self._auth_failure = None
+
         payload: dict[str, Any] = {
             "ident": creds.preferred_profile or None,
             "pass": creds.password,
@@ -156,7 +236,9 @@ class SpaggiariClient:
         }
 
         resp = await self._raw_post_login(payload)
-        data = resp.json() if resp.content else {}
+        if resp.status_code >= 500:
+            raise ClasseVivaError(f"Spaggiari non disponibile (HTTP {resp.status_code}): riprova tra qualche minuto.")
+        data = self._parse_login_json(resp)
 
         # When logging in with a personal email linked to multiple profiles (e.g. G... and S...),
         # Spaggiari may return {"choices": [{"ident": "G1234567X", ...}, {"ident": "S1234567X", ...}]}
@@ -169,13 +251,16 @@ class SpaggiariClient:
                 chosen_ident = (student_choices[0] if student_choices else choices[0]).get("ident", "")
             payload["ident"] = chosen_ident
             resp = await self._raw_post_login(payload)
-            data = resp.json() if resp.content else {}
+            data = self._parse_login_json(resp)
 
         if resp.status_code in (401, 403, 422) or not data.get("token"):
-            err_msg = str(data.get("error") or resp.text or "Credenziali rifiutate")
-            if "otp" in err_msg.lower() or "2fa" in err_msg.lower():
-                raise ClasseVivaError("Spaggiari richiede verifica OTP/2FA per questo account.")
-            raise ClasseVivaError(f"Login ClasseViva fallito (HTTP {resp.status_code}): {err_msg}")
+            message = explain_login_failure(resp.status_code, _spaggiari_error_text(data, resp), creds.username)
+            self._auth_failure = (
+                fingerprint,
+                time.monotonic() + AUTH_FAILURE_COOLDOWN_SECONDS,
+                message,
+            )
+            raise ClasseVivaAuthError(message)
 
         self._token = str(data["token"])
         self._ident = str(data.get("ident") or creds.username)
@@ -219,7 +304,10 @@ class SpaggiariClient:
                     headers.pop("Content-Type", None)
 
                 url = f"{BASE_URL}{endpoint.format(student_id=self._student_id)}"
-                resp = await self._http().request(method, url, headers=headers, **kwargs)
+                try:
+                    resp = await self._http().request(method, url, headers=headers, **kwargs)
+                except httpx.HTTPError as exc:
+                    raise ClasseVivaError(describe_network_error(exc)) from exc
 
                 if 300 <= resp.status_code < 400:
                     raise ClasseVivaError(

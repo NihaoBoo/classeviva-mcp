@@ -85,7 +85,17 @@ Ti chiederà:
 3. **Classe e Indirizzo** (es. `5A` e `Informatica`).
 4. **Link `.ics` di Google Classroom** *(Opzionale: puoi premere Invio per saltarlo e configurarlo dopo con `classeviva-mcp set-classroom-url`)*.
 
-Al termine, il comando **`login` stamperà a schermo il blocco JSON già pronto con i percorsi assoluti del tuo PC** (così eviti errori `spawn uvx ENOENT` su Windows).
+Al termine, il comando **`login` stamperà a schermo il blocco JSON già pronto con i percorsi assoluti del tuo PC** (così eviti errori `spawn uvx ENOENT` su Windows). Puoi ristamparlo in qualsiasi momento, anche nel formato del tuo client, senza rifare il login:
+
+```bash
+classeviva-mcp config                     # Claude Desktop, Cursor, Antigravity... (mcpServers)
+classeviva-mcp config --client opencode   # OpenCode (opencode.json)
+classeviva-mcp config --client vscode     # VS Code / Copilot (.vscode/mcp.json)
+classeviva-mcp config --client codex      # Codex (config.toml)
+classeviva-mcp config --client claude-code  # comando `claude mcp add`
+```
+
+> **Usi `uvx`?** Dalla v1.3.0 il JSON avvia il server con `uvx classeviva-mcp` e **non punta più all'eseguibile dentro la cache di uv** (`...\uv\cache\archive-v0\<hash>\Scripts\classeviva-mcp.EXE`): quel percorso cambia o sparisce appena uv pulisce la cache. Se hai un JSON vecchio con `archive-v0` nel percorso, rigeneralo. Per un avvio istantaneo installa una volta con `uv tool install classeviva-mcp`.
 
 ### Punto 4 — Incolla il JSON nel tuo Client AI e parla con l'Agent
 1. Se non l'ha già fatto l'AI al Punto 1, incolla il JSON stampato dal comando `login` in uno di questi due modi:
@@ -116,6 +126,24 @@ Al termine, il comando **`login` stamperà a schermo il blocco JSON già pronto 
    > *"Fai `/classeviva:setup`: sono della [CLASSE] [PERCORSO_DI_STUDIO]. Controlla se in bacheca c'è l'orario delle lezioni e salva quello della mia classe."*
 
 > 💡 **Come modificare classe, orario o preferenze in seguito**: ricordati che non serve rilanciare `/classeviva:setup` da zero per cambiare un dato: puoi anche dirglielo normalmente in chat (es. *"Ho deciso di cambiare percorso di studi / scuola..."* oppure *"Sono stato promosso"*) e l'AI aggiornerà da sola il file di contesto locale. Inoltre, a ogni nuovo anno scolastico (`get_today_context`), il server confronta la classe salvata con quella ufficiale del registro elettronico per avvisare l'AI se sei passato dalla `3A` alla `4A`.
+
+---
+
+## 🏫 Risoluzione problemi (PC scolastico, prima installazione)
+
+Esegui sempre prima `classeviva-mcp doctor` (o `uvx classeviva-mcp doctor`): distingue i problemi di **avvio**, **rete** e **credenziali** senza stampare dati personali.
+
+| Sintomo | Causa | Soluzione |
+| --- | --- | --- |
+| Il client AI non avvia il server, o funzionava e poi ha smesso | Il JSON punta a `...\uv\cache\archive-v0\...` (generato da versioni < 1.3) | `classeviva-mcp config` e incolla il nuovo JSON, oppure `uv tool install classeviva-mcp` |
+| Timeout all'avvio solo la prima volta | `uvx` sta scaricando le dipendenze (~30 s) | Riavvia il client, oppure `uv tool install classeviva-mcp` |
+| `Credenziali rifiutate da ClasseViva (HTTP 422 ...)` | Password errata/scaduta, email non collegata, accesso solo via Google/SPID | Prova il login su web.spaggiari.eu; usa il codice utente `S...`/`G...` invece dell'email; dopo molti tentativi attendi 15-30 minuti |
+| `doctor` fallisce anche dopo aver rifatto `login` | `login` non sovrascrive mai credenziali con una password sbagliata: restano le vecchie. Oppure `CLASSEVIVA_USER` è impostata e ha la precedenza | `classeviva-mcp logout`, poi `login`; controlla le variabili d'ambiente (le mostra `doctor`) |
+| `Errore certificato TLS`, `pagina HTML invece che JSON`, `proxy`, `timeout` | Filtro web/proxy della scuola | Dalla v1.3.0 il server usa i certificati e il proxy di sistema di Windows. Se la rete blocca ClasseViva, usa un hotspot. `CLASSEVIVA_PROXY=off` forza la connessione diretta |
+| `login va eseguito in un terminale interattivo` | L'agente AI ha provato a fare login al posto tuo | Apri PowerShell e lancia tu `login`: la password non deve passare dalla chat |
+| La password incollata non funziona | Con Ctrl+V alcune console inseriscono `^V` | Incolla col tasto destro o usa Windows Terminal; `login` ora lo rileva |
+
+Il server, dopo una password rifiutata, **sospende i nuovi tentativi per 10 minuti** con le stesse credenziali: un agente che chiama molti tool di fila non può più far bloccare l'account.
 
 ---
 
@@ -295,7 +323,7 @@ Il token si risolve in quest'ordine: `--token-file` → variabile `CLASSEVIVA_MC
 > **Importante:** questa sezione descrive il comportamento della v1.2.1; non rappresenta una certificazione di sicurezza. Non esporre il server a gruppi, utenti non fidati o Internet. Dettagli completi in [SECURITY.md](SECURITY.md) e [PRIVACY.md](PRIVACY.md).
 
 - **`CLASSEVIVA_READ_ONLY_MODE` (alias `CLASSEVIVA_PUBLIC_MODE`) minimizza i dati e disabilita le scritture.** In questa modalità i tool personali e di scrittura (`get_grades`, `get_absences`, `get_homework`, `get_agenda`, `get_lessons`, `calculate_grade_target`, `update_student_context`, `save_class_timetable`) non vengono registrati e le funzioni sollevano `PermissionError`. `get_today_context` restituisce un profilo senza nome, cognome e identificativi, e un contesto senza numero di registro, note o ID delle circolari viste. Resta comunque una modalità per singolo account, **non** un sistema multiutente: il server non autentica i chiamanti.
-- **Il feed Classroom è protetto contro SSRF.** Sono ammessi solo host `calendar.google.com` e `classroom.google.com`, schema HTTPS, porta 443 e risoluzione verso IP pubblici. I redirect vengono seguiti manualmente e rivalidati (massimo 3), la risposta è limitata a 5 MB e `trust_env=False` evita proxy ambientali. Il link si configura solo via CLI (`classeviva-mcp set-classroom-url`) e non viene mai restituito dai tool.
+- **Il feed Classroom è protetto contro SSRF.** Sono ammessi solo host `calendar.google.com` e `classroom.google.com`, schema HTTPS, porta 443 e risoluzione verso IP pubblici. I redirect vengono seguiti manualmente e rivalidati (massimo 3) e la risposta è limitata a 5 MB. Come per Spaggiari, dalla v1.3.0 viene usato il proxy di sistema (necessario sulle reti scolastiche; disattivabile con `CLASSEVIVA_PROXY=off`) e la verifica TLS usa i certificati del sistema operativo; la verifica non viene mai disattivata. Il link si configura solo via CLI (`classeviva-mcp set-classroom-url`) e non viene mai restituito dai tool.
 - **I segreti restano nel Keyring o in un fallback cifrato.** Su Windows il fallback usa DPAPI; su Linux/macOS senza Keyring il salvataggio fallisce in modo esplicito, salvo `--allow-insecure-plaintext`. I file sono scritti in modo atomico con permessi `0600` dove supportati. `session_cache.json` contiene solo `token`, `ident` e `student_id`. L'URL iCal viene migrato automaticamente fuori da `student_context.json`.
 - **Logout esplicito.** `classeviva-mcp logout` rimuove credenziali e sessione ma conserva orario e note; `classeviva-mcp logout --purge` elimina anche `student_context.json` e la cache degli allegati. Nessuno dei due richiede privilegi di amministratore. Cancellare a mano solo le voci del Keyring **non basta**: `session_cache.json` contiene il token di sessione e resta fino a `logout`. `logout` non revoca il token lato Spaggiari: in caso di sospetto cambia la password da un altro dispositivo.
 - **La lettura di una circolare può modificarne lo stato sul registro.** Spaggiari restituisce testo e allegati completi solo dopo l'endpoint `noticeboard/read`, che segna la circolare come letta. `read_notice_pdf` espone `allow_mark_as_read` con **default `False`**: su una circolare nuova restituisce solo i metadati e non modifica lo stato remoto. Passa `allow_mark_as_read=True` solo dopo aver avvisato lo studente; i prompt `setup` e `notices_brief` chiedono conferma. Se non è possibile verificare se la circolare è già stata letta, il tool **fallisce chiuso**: nessuna ricevuta di lettura, nessun download. Il tool restituisce `notice_marked_as_read` / `notice_was_unread` / `notice_read_state_known`. In `READ_ONLY_MODE` il valore è forzato a `False` e `save_pdf` è ignorato. `list_notices` non chiama mai l'endpoint di lettura.

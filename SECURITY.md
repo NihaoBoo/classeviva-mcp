@@ -55,8 +55,11 @@ public networks, shared group chats, or the open Internet.
 - Hosts resolving to private, loopback, link-local, multicast, or reserved
   addresses are rejected.
 - Redirects are followed manually and revalidated (max 3).
-- The response body is capped at 5 MB and `trust_env=False` avoids ambient
-  proxy settings.
+- The response body is capped at 5 MB. Since 1.3.0 outbound clients honour the
+  system/environment proxy (required on school networks; `CLASSEVIVA_PROXY=off`
+  restores direct connections) and verify TLS against the OS trust store via
+  `truststore` (`CLASSEVIVA_TLS=certifi` restores the bundled roots).
+  Certificate verification is never disabled.
 - Spaggiari API redirects are rejected.
 - Attachment redirects are allowed only to `*.spaggiari.eu`; the signed CDN
   URL is fetched without Spaggiari auth headers and capped at 20 MB.

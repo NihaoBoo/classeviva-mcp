@@ -148,6 +148,16 @@ async def test_get_snapshot_aggregates_homework_warnings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = CredentialStore(fallback_dir=tmp_path, allow_insecure_plaintext=True)
+    # Classroom must be configured, otherwise the fetch is (correctly) skipped.
+    monkeypatch.setattr(
+        store,
+        "load",
+        lambda: StoredCredentials(
+            username="S1234567X",
+            password="pw",
+            classroom_ical_url="https://calendar.google.com/calendar/ical/x/private-y/basic.ics",
+        ),
+    )
     server.set_client_for_testing(_EmptyAgendaClient(), store)
     monkeypatch.setattr(server, "READ_ONLY_MODE", False)
 

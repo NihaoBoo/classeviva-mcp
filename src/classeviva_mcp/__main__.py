@@ -4,64 +4,133 @@ import argparse
 import asyncio
 import getpass
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
 
 from classeviva_mcp import __version__
 from classeviva_mcp.classroom_ical import validate_ical_url
-from classeviva_mcp.client import ClasseVivaError, SpaggiariClient
+from classeviva_mcp.client import ClasseVivaAuthError, ClasseVivaError, SpaggiariClient
 from classeviva_mcp.credentials import CredentialStore, StoredCredentials
+from classeviva_mcp.network import detected_proxy, tls_backend_label
 from classeviva_mcp.server import _normalize_class_code, mcp
 
+CLIENT_FORMATS = ("generic", "opencode", "vscode", "codex", "claude-code")
 
-def _build_ready_mcp_config() -> str:
-    """Builds a copy-pasteable MCP JSON snippet with absolute paths.
+
+def _looks_ephemeral(path: Path) -> bool:
+    """True when ``path`` lives inside uv's cache (e.g. an ``uvx`` throwaway env).
+
+    ``uvx classeviva-mcp login`` runs from ``<uv cache>/archive-v0/<hash>/`` and
+    puts that folder's ``Scripts``/``bin`` first on PATH. Pointing an MCP
+    client at that executable works once, then breaks as soon as uv prunes or
+    refreshes its cache (``uv cache clean``, a new release, a school PC that
+    wipes AppData at logoff...).
+    """
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    parts = [p.lower() for p in resolved.parts]
+    if any(p.startswith(("archive-v", "builds-v", "environments-v")) for p in parts):
+        return True
+    for first, second in zip(parts, parts[1:], strict=False):
+        if (first, second) in {("uv", "cache"), (".cache", "uv")}:
+            return True
+    cache_dir = os.environ.get("UV_CACHE_DIR", "").strip()
+    if cache_dir:
+        try:
+            resolved.relative_to(Path(cache_dir).resolve())
+            return True
+        except (ValueError, OSError):
+            pass
+    return False
+
+
+def _running_from_ephemeral_env() -> bool:
+    return _looks_ephemeral(Path(sys.prefix)) or _looks_ephemeral(Path(sys.executable))
+
+
+def _find_uvx() -> str:
+    uvx = shutil.which("uvx")
+    if uvx:
+        return uvx
+    uv = shutil.which("uv")
+    if uv:
+        sibling = Path(uv).with_name("uvx.exe" if sys.platform == "win32" else "uvx")
+        if sibling.exists():
+            return str(sibling)
+    return "uvx"
+
+
+def _resolve_launch_command() -> tuple[str, list[str], str]:
+    """Returns ``(command, args, kind)`` for a stable way to start the server.
+
+    ``kind`` is ``dev`` (local checkout), ``installed`` (``uv tool install`` /
+    pip, stable path) or ``uvx`` (run on demand, survives cache cleanups).
+    """
+    pkg_dir = Path(__file__).resolve().parent.parent.parent
+    if (pkg_dir / "pyproject.toml").exists() and not _looks_ephemeral(pkg_dir):
+        uv_bin = shutil.which("uv") or "uv"
+        return uv_bin, ["run", "--directory", str(pkg_dir), "classeviva-mcp"], "dev"
+
+    installed_bin = shutil.which("classeviva-mcp")
+    if installed_bin and not _running_from_ephemeral_env() and not _looks_ephemeral(Path(installed_bin)):
+        return str(Path(installed_bin).absolute()), [], "installed"
+
+    return _find_uvx(), ["classeviva-mcp"], "uvx"
+
+
+def _build_ready_mcp_config(client: str = "generic") -> str:
+    """Builds a copy-pasteable MCP config with absolute paths for ``client``.
 
     GUI clients that spawn the server directly cannot resolve bare command names,
-    so we always point to the concrete executable (or to `uv`) for this machine.
+    so we always point to a concrete executable (``classeviva-mcp``, ``uv`` or
+    ``uvx``) and never to a file inside uv's cache.
     """
-    installed_bin = shutil.which("classeviva-mcp")
-    pkg_dir = Path(__file__).resolve().parent.parent.parent
-    if (pkg_dir / "pyproject.toml").exists():
-        uv_bin = shutil.which("uv") or "uv"
-        cfg = {
-            "mcpServers": {
-                "classeviva": {
-                    "command": uv_bin,
-                    "args": [
-                        "run",
-                        "--directory",
-                        str(pkg_dir),
-                        "classeviva-mcp",
-                    ],
-                }
-            }
-        }
-    elif installed_bin:
-        cfg = {
-            "mcpServers": {
-                "classeviva": {
-                    "command": installed_bin,
-                    "args": [],
-                }
-            }
-        }
-    else:
-        uvx_bin = shutil.which("uvx") or "uvx"
-        cfg = {
-            "mcpServers": {
-                "classeviva": {
-                    "command": uvx_bin,
-                    "args": [
-                        "--from",
-                        "classeviva-mcp",
-                        "classeviva-mcp",
-                    ],
-                }
-            }
-        }
-    return json.dumps(cfg, indent=2)
+    command, args, _kind = _resolve_launch_command()
+    if client == "opencode":
+        return json.dumps(
+            {
+                "$schema": "https://opencode.ai/config.json",
+                "mcp": {
+                    "classeviva": {
+                        "type": "local",
+                        "command": [command, *args],
+                        "enabled": True,
+                    }
+                },
+            },
+            indent=2,
+        )
+    if client == "vscode":
+        return json.dumps(
+            {"servers": {"classeviva": {"type": "stdio", "command": command, "args": args}}},
+            indent=2,
+        )
+    if client == "codex":
+        toml_args = ", ".join(json.dumps(a) for a in args)
+        return f"[mcp_servers.classeviva]\ncommand = {json.dumps(command)}\nargs = [{toml_args}]"
+    if client == "claude-code":
+        quoted = " ".join(json.dumps(part) for part in [command, *args])
+        return f"claude mcp add --scope user classeviva -- {quoted}"
+    return json.dumps({"mcpServers": {"classeviva": {"command": command, "args": args}}}, indent=2)
+
+
+def _launch_advice() -> list[str]:
+    """Human hints about the chosen launch method (printed by login/config/doctor)."""
+    _command, _args, kind = _resolve_launch_command()
+    if kind == "uvx":
+        return [
+            "Stai usando `uvx`: il JSON avvia il server tramite uvx e non punta alla",
+            "cache di uv (che viene svuotata e cambierebbe percorso). Il primo avvio",
+            "dal client AI può richiedere ~30 secondi per scaricare le dipendenze.",
+            "Per un avvio istantaneo e un percorso fisso installalo una volta con:",
+            "    uv tool install classeviva-mcp",
+            "e rigenera il JSON con `classeviva-mcp config`.",
+        ]
+    return []
 
 
 def _mask_ident(ident: str) -> str:
@@ -83,8 +152,34 @@ def _credential_backend_label(backend: str) -> tuple[str, str]:
     return ("File locale (fallback)", "Attivato esplicitamente con --allow-insecure-plaintext")
 
 
+def _has_control_chars(value: str) -> bool:
+    return any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
+
+
+def _stored_username(store: CredentialStore) -> str:
+    """Username of the credentials currently stored (env excluded), or ''."""
+    try:
+        creds = store.load()
+    except Exception:  # noqa: BLE001 - nothing stored
+        return ""
+    return creds.username if creds.source != "env" else ""
+
+
+def _env_overrides_active() -> bool:
+    return bool(os.getenv("CLASSEVIVA_USER", "").strip() and os.getenv("CLASSEVIVA_PASSWORD", "").strip())
+
+
 async def _cmd_login(args: argparse.Namespace) -> int:
     store = CredentialStore(allow_insecure_plaintext=args.allow_insecure_plaintext)
+    if not sys.stdin.isatty():
+        print(
+            "Errore: `login` va eseguito in un terminale interattivo (PowerShell, Terminale),\n"
+            "non dalla chat o dagli strumenti dell'agente AI: la password non deve passare\n"
+            "dalla conversazione. In alternativa imposta CLASSEVIVA_USER e CLASSEVIVA_PASSWORD\n"
+            "nell'ambiente del client MCP.",
+            file=sys.stderr,
+        )
+        return 1
     print()
     print("=" * 64)
     print("  ClasseViva MCP - Login sicuro")
@@ -106,11 +201,30 @@ async def _cmd_login(args: argparse.Namespace) -> int:
     if not username:
         print("Errore: utente vuoto.", file=sys.stderr)
         return 1
+    if any(ch.isspace() for ch in username) or _has_control_chars(username):
+        print("Errore: l'utente non può contenere spazi o caratteri invisibili.", file=sys.stderr)
+        return 1
 
     password = getpass.getpass("2. Password ClasseViva (nascosta mentre scrivi): ")
+    # Pasting can append a newline/CR; never strip regular spaces, they may be real.
+    password = password.rstrip("\r\n")
     if not password:
         print("Errore: password vuota.", file=sys.stderr)
         return 1
+    if _has_control_chars(password):
+        print(
+            "Errore: la password contiene caratteri di controllo (es. ^V). Succede incollando\n"
+            "con Ctrl+V in alcune console Windows: incolla col tasto destro del mouse,\n"
+            "usa Windows Terminal oppure digitala a mano.",
+            file=sys.stderr,
+        )
+        return 1
+    if password != password.strip():
+        print(
+            "Attenzione: la password inizia o finisce con uno spazio. Se non è voluto,\n"
+            "rilancia `login` e ricopiala senza spazi.",
+            file=sys.stderr,
+        )
 
     school_class = input("3. La tua Classe e Sezione [es. 5AI, premi Invio per configurarla dopo]: ").strip()
     if school_class:
@@ -140,10 +254,23 @@ async def _cmd_login(args: argparse.Namespace) -> int:
     probe_client = SpaggiariClient(store=store, credentials=candidate, persist_session=False)
     try:
         profile = await probe_client.get_profile()
-    except ClasseVivaError as exc:
+    except ClasseVivaAuthError as exc:
         print(f"\n[ERRORE LOGIN] {exc}", file=sys.stderr)
-        print("Nessuna credenziale e' stata salvata: la password non era corretta.", file=sys.stderr)
+        print("Nessuna nuova credenziale e' stata salvata.", file=sys.stderr)
+        previous = _stored_username(store)
+        if previous:
+            print(
+                f"Restano salvate le credenziali precedenti ({_mask_ident(previous)}): il server MCP\n"
+                "e `doctor` continueranno a usarle. Per rimuoverle: `classeviva-mcp logout`.",
+                file=sys.stderr,
+            )
         return 1
+    except ClasseVivaError as exc:
+        print(f"\n[ERRORE CONNESSIONE] {exc}", file=sys.stderr)
+        print("Nessuna credenziale e' stata salvata (password non verificata).", file=sys.stderr)
+        return 1
+    finally:
+        await probe_client.aclose()
 
     try:
         backend = store.save(username=username, password=password, classroom_ical_url=ical_url)
@@ -185,24 +312,52 @@ async def _cmd_login(args: argparse.Namespace) -> int:
     print()
     print("  Il JSON è specifico di questo computer: su un'altra")
     print("  macchina esegui di nuovo `login` per ottenerne uno valido.")
+    print("  Formati per altri client: `classeviva-mcp config --client")
+    print("  opencode|vscode|codex|claude-code`.")
     print()
     print("-" * 64)
-    for line in _build_ready_mcp_config().splitlines():
+    for line in _build_ready_mcp_config(getattr(args, "client", "generic")).splitlines():
         print("  " + line)
     print("-" * 64)
+    for line in _launch_advice():
+        print("  " + line)
+    if _env_overrides_active():
+        print()
+        print("  ATTENZIONE: CLASSEVIVA_USER/CLASSEVIVA_PASSWORD sono impostate e hanno")
+        print("  la precedenza sulle credenziali appena salvate.")
     print()
+    return 0
+
+
+def _cmd_config(args: argparse.Namespace) -> int:
+    """Prints only the MCP configuration (no credentials needed)."""
+    print(_build_ready_mcp_config(args.client))
+    advice = _launch_advice()
+    if advice:
+        print(file=sys.stderr)
+        for line in advice:
+            print(line, file=sys.stderr)
     return 0
 
 
 async def _cmd_doctor(args: argparse.Namespace) -> int:
     """Runs a privacy-safe diagnostic check (never prints names, grades, or passwords)."""
     store = CredentialStore(allow_insecure_plaintext=args.allow_insecure_plaintext)
-    print("=== ClasseViva MCP — Diagnostica (Privacy-Safe) ===")
+    print("=== ClasseViva MCP - Diagnostica (Privacy-Safe) ===")
+    command, cmd_args, kind = _resolve_launch_command()
+    print(f"[i]  Versione {__version__}, Python {sys.version.split()[0]}, {sys.platform}")
+    print(f"[i]  Avvio consigliato  : {kind} -> {' '.join([command, *cmd_args])}")
+    if _running_from_ephemeral_env():
+        print("[i]  In esecuzione dalla cache di uv (uvx): non usare questo percorso nel JSON MCP.")
+    print(f"[i]  Rete               : proxy {detected_proxy()}; TLS {tls_backend_label()}")
     try:
         creds = store.load()
-        print(f"[OK] Credenziali trovate (sorgente: {creds.source})")
+        ident_kind = "email" if "@" in creds.username else "codice utente"
+        print(f"[OK] Credenziali trovate (sorgente: {creds.source}, {ident_kind} {_mask_ident(creds.username)})")
         print(f"     Cartella dati      : {store.data_dir}")
         print(f"     Sessione in cache  : {'presente' if store.session_file.exists() else 'assente'}")
+        if creds.source == "env":
+            print("[i]  CLASSEVIVA_USER/CLASSEVIVA_PASSWORD hanno la precedenza sul Keyring.")
     except Exception as exc:
         print(f"[FAIL] {exc}")
         return 1
@@ -218,8 +373,15 @@ async def _cmd_doctor(args: argparse.Namespace) -> int:
             f"[OK] Login Spaggiari riuscito "
             f"(tipo account: {profile.account_type}, info: {info_label})"
         )
+    except ClasseVivaAuthError as exc:
+        print(f"[FAIL] Login Spaggiari fallito: {exc}")
+        print("       Le credenziali salvate non sono valide: esegui `classeviva-mcp login`")
+        print("       (le vecchie vengono sostituite solo se la nuova password è corretta).")
+        await client.aclose()
+        return 1
     except Exception as exc:
         print(f"[FAIL] Login Spaggiari fallito: {exc}")
+        await client.aclose()
         return 1
 
     try:
@@ -232,6 +394,8 @@ async def _cmd_doctor(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"[WARN] Errore lettura endpoint: {exc}")
         return 1
+    finally:
+        await client.aclose()
 
     print("\nTUTTI I CONTROLLI SUPERATI! Il server MCP è pronto per i tuoi agent.")
     return 0
@@ -335,6 +499,20 @@ def main() -> None:
         help="Consenti il fallback in chiaro se Keyring e DPAPI non sono disponibili",
     )
     login.add_argument("--verbose", action="store_true", help="Mostra scuola e classe in output")
+    login.add_argument(
+        "--client",
+        choices=CLIENT_FORMATS,
+        default="generic",
+        help="Formato della configurazione MCP stampata (default: generic / mcpServers)",
+    )
+
+    config = sub.add_parser("config", help="Stampa la configurazione MCP per questo computer (nessun login richiesto)")
+    config.add_argument(
+        "--client",
+        choices=CLIENT_FORMATS,
+        default="generic",
+        help="generic (Claude Desktop, Cursor, Antigravity...), opencode, vscode, codex, claude-code",
+    )
 
     doctor = sub.add_parser(
         "doctor", help="Verifica la connessione a Spaggiari senza stampare dati personali"
@@ -405,8 +583,18 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    if args.command not in (None, "serve"):
+        # Windows consoles/pipes may use a legacy code page: never crash on output.
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+            except (AttributeError, ValueError):
+                pass
+
     if args.command == "login":
         sys.exit(asyncio.run(_cmd_login(args)))
+    elif args.command == "config":
+        sys.exit(_cmd_config(args))
     elif args.command == "doctor":
         sys.exit(asyncio.run(_cmd_doctor(args)))
     elif args.command == "set-classroom-url":

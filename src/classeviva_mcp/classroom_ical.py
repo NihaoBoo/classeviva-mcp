@@ -12,6 +12,7 @@ import httpx
 from icalendar import Calendar
 
 from classeviva_mcp.models import ROME_TZ, AgendaItem
+from classeviva_mcp.network import build_async_client
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +165,7 @@ async def fetch_classroom_oauth_tasks(
     headers = {"Authorization": f"Bearer {access_token}"}
     items: list[AgendaItem] = []
 
-    async with httpx.AsyncClient(timeout=20.0, follow_redirects=False, trust_env=False) as client:
+    async with build_async_client(timeout=20.0, follow_redirects=False) as client:
         c_resp = await client.get(
             f"{CLASSROOM_API_BASE}/courses",
             headers=headers,
@@ -215,10 +216,9 @@ async def fetch_classroom_ical_tasks(
     """Downloads and parses a Google Classroom secret iCal (.ics) feed into AgendaItem objects."""
     clean_url = validate_ical_url(ical_url)
     own_client = http_client is None
-    client = http_client or httpx.AsyncClient(
+    client = http_client or build_async_client(
         timeout=15.0,
         follow_redirects=False,
-        trust_env=False,
     )
     try:
         for _ in range(MAX_REDIRECTS + 1):
