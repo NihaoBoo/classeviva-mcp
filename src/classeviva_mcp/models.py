@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 ROME_TZ = ZoneInfo("Europe/Rome")
 
@@ -173,4 +173,74 @@ class NoticeItem(BaseModel):
     has_attachment: bool = False
     attachment_numbers: list[int] = Field(default_factory=list)
     attachment_filenames: list[str] = Field(default_factory=list)
+
+
+class DidacticsFile(BaseModel):
+    content_id: int | str = Field(description="ID univoco del file/contenuto didattico")
+    content_name: str = Field(description="Nome del file (es. 'Esercizi_Capitolo4.pdf')")
+    share_date: str = Field(default="", description="Data di condivisione YYYY-MM-DD")
+    file_type: str = Field(default="", description="Estensione o tipo del file (es. 'pdf', 'docx')")
+    size_bytes: int | None = Field(default=None, description="Dimensione del file in byte se disponibile")
+
+
+class DidacticsFolder(BaseModel):
+    folder_id: int | str = Field(description="ID univoco della cartella didattica")
+    folder_name: str = Field(description="Nome della cartella o argomento didattico")
+    teacher_name: str = Field(default="", description="Nome del docente proprietario")
+    teacher_id: int | str = Field(default="", description="ID del docente")
+    last_share_date: str = Field(default="", description="Data di ultima modifica o condivisione YYYY-MM-DD")
+    files: list[DidacticsFile] = Field(default_factory=list, description="Elenco dei file contenuti nella cartella")
+
+
+class CalendarDay(BaseModel):
+    date: str = Field(description="Data nel formato YYYY-MM-DD")
+    day_of_week: int = Field(description="Giorno della settimana (1=Lunedì, ..., 7=Domenica)")
+    status: str = Field(description="Stato del giorno: 'HD' (festivo/vacanza), 'WD'/'SD' (scuola/lezione), 'NW' (non lavorativo)")
+    is_holiday: bool = Field(default=False, description="True se il giorno è festivo o vacanza (status == 'HD')")
+    description: str = Field(default="", description="Descrizione o causale della festività se disponibile")
+
+    @model_validator(mode="after")
+    def _compute_is_holiday(self) -> CalendarDay:
+        if self.status == "HD":
+            self.is_holiday = True
+        return self
+
+
+class SchoolPeriod(BaseModel):
+    period_code: str = Field(description="Codice identificativo del periodo (es. 'Q1', 'Q2', 'T1', 'P1')")
+    period_pos: int = Field(default=1, description="Posizione ordinale del periodo scolastico (1, 2, 3...)")
+    description: str = Field(default="", description="Descrizione del periodo (es. 'Primo Quadrimestre')")
+    is_final: bool = Field(default=False, description="True se il periodo corrisponde allo scrutinio finale")
+    date_start: str = Field(default="", description="Data di inizio periodo YYYY-MM-DD")
+    date_end: str = Field(default="", description="Data di fine periodo YYYY-MM-DD")
+
+
+class DisciplinaryNote(BaseModel):
+    id: str = Field(description="ID univoco della nota (evtId)")
+    kind: str = Field(description="Tipo di nota: 'NTTE' (docente), 'NTCL' (classe), 'NTWN' (richiamo/avvertimento), 'NTST' (sanzione/disciplinare)")
+    kind_description: str = Field(default="", description="Descrizione italiana del tipo di nota")
+    date: str = Field(description="Data dell'evento YYYY-MM-DD")
+    teacher: str = Field(default="", description="Nome del docente autore della nota")
+    text: str = Field(default="", description="Corpo testuale completo della nota")
+    is_read: bool = Field(default=False, description="True se la nota è stata già vista/letta")
+
+
+class SchoolDocument(BaseModel):
+    hash: str = Field(description="Hash identificativo univoco del documento (usato per il download)")
+    title: str = Field(description="Titolo o descrizione del documento (es. 'Scheda di Valutazione 1° Quadrimestre')")
+    document_type: str = Field(default="", description="Tipologia documento ('pagella', 'certificato', 'scheda')")
+    publish_date: str = Field(default="", description="Data di pubblicazione YYYY-MM-DD")
+
+
+class SchoolBook(BaseModel):
+    isbn: str = Field(description="Codice ISBN-13 del libro di testo")
+    title: str = Field(description="Titolo dell'opera")
+    authors: str = Field(default="", description="Autori del libro")
+    publisher: str = Field(default="", description="Casa editrice (es. Zanichelli, Mondadori)")
+    subject: str = Field(default="", description="Materia scolastica associata")
+    volume: str = Field(default="", description="Volume o tomo (es. '1', '2', 'U' unico)")
+    price: float | None = Field(default=None, description="Prezzo di copertina in Euro")
+    to_buy: bool = Field(default=True, description="True se il libro è da acquistare")
+    is_recommended: bool = Field(default=False, description="True se il libro è solo consigliato")
+
 

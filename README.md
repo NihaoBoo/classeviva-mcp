@@ -236,7 +236,40 @@ Su [Discord Developer Portal](https://discord.com/developers/applications):
 | `get_grades` | Voti, medie ponderate per materia ed elenco insufficienze (`< 6.0`); `overall_average` è `null` se non ci sono voti. | 🔒 **Sì** |
 | `calculate_grade_target` | Calcola quale voto serve nella prossima verifica per arrivare alla media obiettivo; `found=false` se la materia non ha voti. | 🔒 **Sì** |
 | `get_absences` | Assenze, ritardi e uscite anticipate con `unjustified_count` (quelle da giustificare), `justified_count` e `breakdown_by_kind`. | 🔒 **Sì** |
-| `get_snapshot` | **Tutto in una chiamata**: profilo, contesto, materie, voti, assenze, compiti e agenda. Le 5 richieste di rete partono in parallelo. | 🔒 **Sì** |
+| `get_snapshot` | **Tutto in una chiamata**: profilo, contesto, materie, voti, assenze, compiti, agenda, prossimi giorni di vacanza/ponti e novità in Didattica. Le richieste di rete partono in parallelo. Le note disciplinari **non** sono incluse. | 🔒 **Sì** |
+| `list_didactics` | Materiali dei docenti (sezione **Didattica** del vecchio registro, **Materiali/Compiti** nel nuovo): cartelle, materia, docente, file. Filtri `subject` e `teacher`. | 🔒 **Sì** |
+| `download_didactics_item` | Scarica un file di Didattica (`file_id`) e ne estrae il testo (PDF, DOCX, XLSX, TXT, CSV). Salva in una cartella locale con permessi privati. | 🔒 **Sì** |
+| `get_calendar` | Giorni di vacanza, festività e ponti **deliberati dalla tua scuola** (incluso il patrono) nei prossimi `days_ahead` giorni (1-180). | 🔒 **Sì** |
+| `get_notes` | Note disciplinari, richiami e sanzioni con testo completo (si apre ogni nota: può segnarla come letta sul registro). | 🔒 **Sì** |
+| `get_documents` | Elenco di pagelle e documenti ufficiali di scrutinio. | 🔒 **Sì** |
+| `get_schoolbooks` | Libri di testo adottati con ISBN, autori, editore, prezzo e obbligatorio/consigliato. Filtro `subject`. | 🔒 **Sì** |
+
+> I libri vengono solo **elencati**: i contenuti di Zanichelli, HubScuola, bSmart e simili sono protetti da DRM e da login a pagamento, quindi il server non li scarica né ne estrae le pagine.
+
+### 💬 Prompt MCP
+
+Oltre ai prompt già presenti (`setup`, `daily_brief`, `recovery_plan`, `notices_brief`) sono disponibili:
+
+| Prompt | Cosa fa |
+|---|---|
+| `recap-settimanale` | Riepilogo della settimana: compiti, verifiche, prossime vacanze/ponti. |
+| `piano-recupero-materie` | Analizza le insufficienze e propone priorità di studio con `calculate_grade_target`. |
+
+### ✅ Guida al collaudo live sul tuo account
+
+I test automatici usano solo risposte simulate. Prima di fidarti delle nuove funzioni, provale una volta sul tuo account reale, in quest'ordine:
+
+1. `classeviva-mcp doctor` deve dare `[OK]` su login, proxy e certificati.
+2. **`get_calendar`**: chiedi «quando sono le prossime vacanze?». Deve comparire il 12-13 novembre della tua scuola. È il test più rapido e non modifica nulla.
+3. **`list_didactics`**: confronta con Materiali/Compiti sul sito. Se è vuoto ma sul sito vedi file, segnalalo.
+4. **`download_didactics_item`** su un PDF piccolo: controlla che il testo estratto sia leggibile.
+5. **`get_schoolbooks`**: i libri devono coincidere con quelli adottati. Può essere vuoto se la scuola non ha pubblicato l'elenco.
+6. **`get_documents`**: può essere vuoto prima degli scrutini; è normale.
+7. **`get_snapshot`**: deve includere festività e novità Didattica e **non** le note.
+8. **`read_notice_pdf`** su una circolare nuova con allegato, con `allow_mark_as_read=True`: lo sblocco la segna come letta sul registro e non è reversibile. Provala per ultima e solo se ti sta bene.
+9. **`get_notes`**: leggere il testo può segnare la nota come letta. Se non hai note, deve rispondere con lista vuota senza errori.
+
+Spaggiari non documenta questi endpoint e possono cambiare senza preavviso: se una risposta non corrisponde a quanto vedi sul sito, apri una issue allegando il messaggio d'errore (senza dati personali).
 
 `CLASSEVIVA_READ_ONLY_MODE=true` (alias retrocompatibile: `CLASSEVIVA_PUBLIC_MODE=true`) non registra i tool personali e di scrittura e fa fallire le funzioni corrispondenti con `PermissionError`. Non è una modalità multiutente: il server non autentica i chiamanti.
 
@@ -322,7 +355,7 @@ Il token si risolve in quest'ordine: `--token-file` → variabile `CLASSEVIVA_MC
 
 > **Importante:** questa sezione descrive il comportamento della v1.2.1; non rappresenta una certificazione di sicurezza. Non esporre il server a gruppi, utenti non fidati o Internet. Dettagli completi in [SECURITY.md](SECURITY.md) e [PRIVACY.md](PRIVACY.md).
 
-- **`CLASSEVIVA_READ_ONLY_MODE` (alias `CLASSEVIVA_PUBLIC_MODE`) minimizza i dati e disabilita le scritture.** In questa modalità i tool personali e di scrittura (`get_grades`, `get_absences`, `get_homework`, `get_agenda`, `get_lessons`, `calculate_grade_target`, `update_student_context`, `save_class_timetable`) non vengono registrati e le funzioni sollevano `PermissionError`. `get_today_context` restituisce un profilo senza nome, cognome e identificativi, e un contesto senza numero di registro, note o ID delle circolari viste. Resta comunque una modalità per singolo account, **non** un sistema multiutente: il server non autentica i chiamanti.
+- **`CLASSEVIVA_READ_ONLY_MODE` (alias `CLASSEVIVA_PUBLIC_MODE`) minimizza i dati e disabilita le scritture.** In questa modalità i tool personali e di scrittura (`get_grades`, `get_absences`, `get_homework`, `get_agenda`, `get_lessons`, `calculate_grade_target`, `update_student_context`, `save_class_timetable`, `list_didactics`, `download_didactics_item`, `get_calendar`, `get_notes`, `get_documents`, `get_schoolbooks`) non vengono registrati e le funzioni sollevano `PermissionError`. `get_today_context` restituisce un profilo senza nome, cognome e identificativi, e un contesto senza numero di registro, note o ID delle circolari viste. Resta comunque una modalità per singolo account, **non** un sistema multiutente: il server non autentica i chiamanti.
 - **Il feed Classroom è protetto contro SSRF.** Sono ammessi solo host `calendar.google.com` e `classroom.google.com`, schema HTTPS, porta 443 e risoluzione verso IP pubblici. I redirect vengono seguiti manualmente e rivalidati (massimo 3) e la risposta è limitata a 5 MB. Come per Spaggiari, dalla v1.3.0 viene usato il proxy di sistema (necessario sulle reti scolastiche; disattivabile con `CLASSEVIVA_PROXY=off`) e la verifica TLS usa i certificati del sistema operativo; la verifica non viene mai disattivata. Il link si configura solo via CLI (`classeviva-mcp set-classroom-url`) e non viene mai restituito dai tool.
 - **I segreti restano nel Keyring o in un fallback cifrato.** Su Windows il fallback usa DPAPI; su Linux/macOS senza Keyring il salvataggio fallisce in modo esplicito, salvo `--allow-insecure-plaintext`. I file sono scritti in modo atomico con permessi `0600` dove supportati. `session_cache.json` contiene solo `token`, `ident` e `student_id`. L'URL iCal viene migrato automaticamente fuori da `student_context.json`.
 - **Logout esplicito.** `classeviva-mcp logout` rimuove credenziali e sessione ma conserva orario e note; `classeviva-mcp logout --purge` elimina anche `student_context.json` e la cache degli allegati. Nessuno dei due richiede privilegi di amministratore. Cancellare a mano solo le voci del Keyring **non basta**: `session_cache.json` contiene il token di sessione e resta fino a `logout`. `logout` non revoca il token lato Spaggiari: in caso di sospetto cambia la password da un altro dispositivo.

@@ -4,6 +4,35 @@ Tutte le modifiche rilevanti sono documentate in questo file.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e il
 progetto adotta [Semantic Versioning](https://semver.org/lang/it/).
 
+## [1.4.0] - 2026-11-09
+
+### Added
+
+- **Didattica / Materiali-Compiti**: `list_didactics` (cartelle, materia, docente, file, con filtri)
+  e `download_didactics_item` (scarica un file con permessi `0o600` ed estrae il testo da
+  PDF/DOCX/XLSX/TXT/CSV). Tollera il refuso upstream `didacticts`.
+- **`get_calendar`**: giorni di vacanza, festività, patrono e ponti deliberati dalla scuola
+  (giorni `HD`) nei prossimi giorni, più i periodi dell'anno scolastico.
+- **`get_notes`**: note disciplinari, richiami e sanzioni (`NTTE`, `NTCL`, `NTWN`, `NTST`) con
+  testo completo.
+- **`get_documents`**: elenco di pagelle e documenti ufficiali di scrutinio.
+- **`get_schoolbooks`**: libri adottati con ISBN, autori, editore, prezzo e obbligatorio/consigliato.
+- **Prompt MCP** `recap-settimanale` e `piano-recupero-materie`.
+- **`get_snapshot`** include ora prossimi giorni di vacanza/ponti e novità in Didattica.
+  Le note disciplinari restano escluse di proposito.
+- README: tabella tool aggiornata e guida al collaudo live sul proprio account.
+
+### Changed
+
+- `read_notice_pdf`: se l'allegato è bloccato perché la circolare non è mai stata aperta,
+  con `allow_mark_as_read=True` la circolare viene segnata come letta, l'allegato scaricato e
+  la risposta riporta `notice_marked_as_read: true`. Senza consenso esplicito non cambia nulla.
+- Tutti i nuovi tool dati personali non vengono registrati in `CLASSEVIVA_READ_ONLY_MODE`.
+
+### Tests
+
+- 198 test (73 nuovi) con risposte Spaggiari simulate offline.
+
 ## [1.3.0] - 2026-11-09
 
 ### Fixed

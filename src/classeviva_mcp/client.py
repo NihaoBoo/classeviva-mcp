@@ -6,7 +6,7 @@ import logging
 import re
 import time
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import httpx
 
@@ -14,9 +14,16 @@ from classeviva_mcp.credentials import CredentialStore, StoredCredentials
 from classeviva_mcp.models import (
     AbsenceItem,
     AgendaItem,
+    CalendarDay,
+    DidacticsFile,
+    DidacticsFolder,
+    DisciplinaryNote,
     GradeItem,
     LessonItem,
     NoticeItem,
+    SchoolBook,
+    SchoolDocument,
+    SchoolPeriod,
     StudentProfile,
     SubjectTeacher,
 )
@@ -357,6 +364,7 @@ class SpaggiariClient:
         num: int,
         *,
         max_bytes: int | None = None,
+        auto_unlock: bool = False,
     ) -> bytes:
         """Downloads an attachment while streaming, with a hard byte cap.
 
@@ -372,13 +380,23 @@ class SpaggiariClient:
         headers.pop("Content-Type", None)
         headers["Z-Auth-Token"] = self._token
 
-        if self._external_client is not None:
-            return await self._download_attachment_with_client(
-                self._external_client, url, headers, max_bytes
-            )
-        return await self._download_attachment_with_client(
-            self._http(), url, headers, max_bytes
+        client = (
+            self._external_client
+            if self._external_client is not None
+            else self._http()
         )
+        try:
+            return await self._download_attachment_with_client(
+                client, url, headers, max_bytes
+            )
+        except httpx.HTTPStatusError as exc:
+            if auto_unlock and exc.response.status_code == 404:
+                logger.info("Allegato %s bloccato (404): sblocco circolare %s...", num, pub_id)
+                if await self.mark_notice_read(event_code, pub_id):
+                    return await self._download_attachment_with_client(
+                        client, url, headers, max_bytes
+                    )
+            raise
 
     async def _download_attachment_with_client(
         self,
@@ -544,7 +562,13 @@ class SpaggiariClient:
         row) from hitting the Spaggiari API more than once for the same data.
         """
         resp = await self._request("GET", endpoint)
-        items = resp.json().get(field) or []
+        body = resp.json()
+        if isinstance(body, list):
+            items = body
+        elif isinstance(body, dict):
+            items = body.get(field) or []
+        else:
+            items = []
         self._cache_set(cache_key, items)
         return items
 
@@ -805,6 +829,38 @@ class SpaggiariClient:
                     )
                     total_bytes += len(attachment_bytes)
             except Exception as exc:  # noqa: BLE001 - one bad attachment must not break the notice
+                is_404 = (
+                    isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404
+                ) or (hasattr(exc, "response") and getattr(exc.response, "status_code", None) == 404)
+                if is_404:
+                    logger.info("Allegato %s bloccato (404): sblocco circolare %s...", num, pub_id)
+                    unlocked = await self.mark_notice_read(event_code, pub_id)
+                    if unlocked:
+                        marked_as_read = True
+                        try:
+                            attachment_bytes = await self._download_attachment(
+                                event_code,
+                                pub_id,
+                                num,
+                                max_bytes=min(MAX_ATTACHMENT_BYTES, remaining),
+                            )
+                            if attachment_bytes:
+                                downloaded.append(
+                                    {
+                                        "attach_num": num,
+                                        "file_name": fname,
+                                        "bytes": attachment_bytes,
+                                    }
+                                )
+                                total_bytes += len(attachment_bytes)
+                                continue
+                        except Exception as retry_exc:
+                            logger.warning(
+                                "Allegato non scaricato dopo sblocco (%s): %s",
+                                num,
+                                type(retry_exc).__name__,
+                            )
+                            continue
                 logger.warning("Allegato non scaricato (%s): %s", num, type(exc).__name__)
                 continue
 
@@ -820,3 +876,534 @@ class SpaggiariClient:
             "read_state_known": True,
             "skipped": False,
         }
+
+    @staticmethod
+    def _parse_content_disposition_filename(headers: httpx.Headers) -> str:
+        """Extracts filename from Content-Disposition header (RFC 5987 / 6266 and standard)."""
+        cd = headers.get("content-disposition", "")
+        if not cd:
+            return ""
+        m_star = re.search(r"filename\*\s*=\s*UTF-8''([^;\r\n]+)", cd, re.IGNORECASE)
+        if m_star:
+            return unquote(m_star.group(1)).strip().strip('"')
+        m = re.search(r'filename\s*=\s*"?([^";\r\n]+)"?', cd, re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
+        return ""
+
+    async def mark_notice_read(self, event_code: str, pub_id: str) -> bool:
+        """Marks a circular notice as read on Spaggiari, unlocking its attachments."""
+        try:
+            resp = await self._request(
+                "POST",
+                f"/students/{{student_id}}/noticeboard/read/{event_code}/{pub_id}/101",
+            )
+            self.invalidate_cache()
+            return resp.status_code == 200
+        except Exception as exc:
+            logger.warning(
+                "Impossibile contrassegnare la circolare %s come letta: %s", pub_id, exc
+            )
+            return False
+
+    async def get_didactics(self) -> list[DidacticsFolder]:
+        """Fetches didactics folders and shared teacher files from /students/{id}/didactics."""
+        cache_key = "didactics"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[no-any-return]
+
+        resp = await self._request("GET", "/students/{student_id}/didactics")
+        data = resp.json()
+        if isinstance(data, list):
+            raw_items = data
+        elif isinstance(data, dict):
+            raw_items = data.get("didactics") or data.get("didacticts") or []
+        else:
+            raw_items = []
+
+        folders: list[DidacticsFolder] = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            # Case 1: item is a teacher object containing a list of 'folders'
+            if "folders" in item and isinstance(item["folders"], list):
+                t_name = str(item.get("teacherName") or "").strip().title()
+                t_id = item.get("teacherId") or ""
+                for f in item["folders"]:
+                    if not isinstance(f, dict):
+                        continue
+                    files: list[DidacticsFile] = []
+                    for c in (f.get("contents") or f.get("files") or []):
+                        if not isinstance(c, dict):
+                            continue
+                        c_name = str(
+                            c.get("contentName") or c.get("name") or c.get("fileName") or ""
+                        ).strip()
+                        c_id = c.get("contentId") or c.get("id") or ""
+                        s_date = str(c.get("lastShareDT") or c.get("shareDate") or "")[:10]
+                        ext = c_name.rsplit(".", 1)[-1].lower() if "." in c_name else ""
+                        f_type = str(c.get("fileType") or c.get("type") or ext).strip()
+                        raw_size = c.get("sizeBytes") or c.get("size")
+                        size_bytes: int | None = None
+                        if raw_size is not None:
+                            try:
+                                size_bytes = int(raw_size)
+                            except (ValueError, TypeError):
+                                size_bytes = None
+                        files.append(
+                            DidacticsFile(
+                                content_id=c_id,
+                                content_name=c_name,
+                                share_date=s_date,
+                                file_type=f_type,
+                                size_bytes=size_bytes,
+                            )
+                        )
+                    f_id = f.get("folderId") or f.get("id") or ""
+                    f_name = str(f.get("folderName") or f.get("name") or "").strip()
+                    f_date = str(f.get("lastShareDT") or f.get("lastShareDate") or "")[:10]
+                    folders.append(
+                        DidacticsFolder(
+                            folder_id=f_id,
+                            folder_name=f_name,
+                            teacher_name=t_name,
+                            teacher_id=t_id,
+                            last_share_date=f_date,
+                            files=files,
+                        )
+                    )
+            else:
+                # Case 2: item is directly a folder object
+                f_id = item.get("folderId") or item.get("id") or ""
+                f_name = str(item.get("folderName") or item.get("name") or "").strip()
+                t_name = str(item.get("teacherName") or "").strip().title()
+                t_id = item.get("teacherId") or ""
+                f_date = str(item.get("lastShareDT") or item.get("lastShareDate") or "")[:10]
+                files = []
+                for c in (item.get("contents") or item.get("files") or []):
+                    if not isinstance(c, dict):
+                        continue
+                    c_name = str(
+                        c.get("contentName") or c.get("name") or c.get("fileName") or ""
+                    ).strip()
+                    c_id = c.get("contentId") or c.get("id") or ""
+                    s_date = str(c.get("lastShareDT") or c.get("shareDate") or "")[:10]
+                    ext = c_name.rsplit(".", 1)[-1].lower() if "." in c_name else ""
+                    f_type = str(c.get("fileType") or c.get("type") or ext).strip()
+                    raw_size = c.get("sizeBytes") or c.get("size")
+                    size_bytes = None
+                    if raw_size is not None:
+                        try:
+                            size_bytes = int(raw_size)
+                        except (ValueError, TypeError):
+                            size_bytes = None
+                    files.append(
+                        DidacticsFile(
+                            content_id=c_id,
+                            content_name=c_name,
+                            share_date=s_date,
+                            file_type=f_type,
+                            size_bytes=size_bytes,
+                        )
+                    )
+                folders.append(
+                    DidacticsFolder(
+                        folder_id=f_id,
+                        folder_name=f_name,
+                        teacher_name=t_name,
+                        teacher_id=t_id,
+                        last_share_date=f_date,
+                        files=files,
+                    )
+                )
+
+        self._cache_set(cache_key, folders)
+        return folders
+
+    async def download_didactics_file(
+        self,
+        content_id: int | str,
+        *,
+        max_bytes: int = MAX_ATTACHMENT_BYTES,
+    ) -> tuple[bytes, str, str]:
+        """Downloads a didactic file with streaming byte cap and redirect validation.
+
+        Returns: (raw_bytes, file_name, content_type)
+        """
+        if not self._token or not self._student_id:
+            await self.login()
+
+        url = f"{BASE_URL}/students/{self._student_id}/didactics/item/{content_id}"
+        headers = dict(DEFAULT_HEADERS)
+        headers.pop("Content-Type", None)
+        headers["Z-Auth-Token"] = self._token
+
+        client = (
+            self._external_client
+            if self._external_client is not None
+            else self._http()
+        )
+        async with client.stream("GET", url, headers=headers) as response:
+            if response.status_code in (301, 302, 303, 307, 308):
+                location = response.headers.get("location", "")
+                if not location:
+                    raise ClasseVivaError("Redirect didattica senza header Location.")
+                target = urljoin(url, location)
+                parsed = urlparse(target)
+                if parsed.scheme != "https" or not self._is_allowed_attachment_host(
+                    parsed.hostname or ""
+                ):
+                    raise ClasseVivaError("Redirect didattica verso host non consentito.")
+                async with client.stream("GET", target, headers={}) as cdn_response:
+                    cdn_response.raise_for_status()
+                    data = await self._read_limited(cdn_response, max_bytes)
+                    fname = self._parse_content_disposition_filename(cdn_response.headers)
+                    if not fname:
+                        path_last = parsed.path.rsplit("/", 1)[-1]
+                        if "." in path_last:
+                            fname = path_last
+                    if not fname:
+                        fname = self._parse_content_disposition_filename(response.headers)
+                    ctype = (
+                        cdn_response.headers.get("content-type", "").split(";")[0].strip()
+                        or "application/octet-stream"
+                    )
+                    return data, fname or f"didactic_{content_id}", ctype
+
+            response.raise_for_status()
+            data = await self._read_limited(response, max_bytes)
+            fname = (
+                self._parse_content_disposition_filename(response.headers)
+                or f"didactic_{content_id}"
+            )
+            ctype = (
+                response.headers.get("content-type", "").split(";")[0].strip()
+                or "application/octet-stream"
+            )
+            return data, fname, ctype
+
+    async def get_calendar(self) -> list[CalendarDay]:
+        """Fetches the school calendar with school days and holidays from /students/{id}/calendar/all."""
+        cache_key = "calendar"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[no-any-return]
+
+        resp = await self._request("GET", "/students/{student_id}/calendar/all")
+        data = resp.json()
+        if isinstance(data, list):
+            raw_days = data
+        elif isinstance(data, dict):
+            raw_days = data.get("calendar") or []
+        else:
+            raw_days = []
+
+        days: list[CalendarDay] = []
+        for d in raw_days:
+            if not isinstance(d, dict):
+                continue
+            raw_date = str(d.get("dayDate") or d.get("date") or "")
+            if len(raw_date) == 8 and raw_date.isdigit():
+                date_str = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
+            else:
+                date_str = raw_date[:10]
+            if not date_str:
+                continue
+
+            try:
+                dow = int(d.get("dayOfWeek") or d.get("dow") or 1)
+            except (ValueError, TypeError):
+                dow = 1
+
+            status = str(d.get("dayStatus") or d.get("status") or "WD").upper()
+            is_holiday = status == "HD" or bool(d.get("isHoliday", False))
+            desc = str(d.get("desc") or d.get("description") or "").strip()
+
+            days.append(
+                CalendarDay(
+                    date=date_str,
+                    day_of_week=dow,
+                    status=status,
+                    is_holiday=is_holiday,
+                    description=desc,
+                )
+            )
+
+        days.sort(key=lambda x: x.date)
+        self._cache_set(cache_key, days)
+        return days
+
+    async def get_periods(self) -> list[SchoolPeriod]:
+        """Fetches school terms and evaluation periods from /students/{id}/periods."""
+        cache_key = "periods"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[no-any-return]
+
+        resp = await self._request("GET", "/students/{student_id}/periods")
+        data = resp.json()
+        if isinstance(data, list):
+            raw_periods = data
+        elif isinstance(data, dict):
+            raw_periods = data.get("periods") or []
+        else:
+            raw_periods = []
+
+        periods: list[SchoolPeriod] = []
+        for p in raw_periods:
+            if not isinstance(p, dict):
+                continue
+            p_code = str(p.get("periodCode") or p.get("code") or "").strip()
+            try:
+                p_pos = int(p.get("periodPos") or p.get("pos") or 1)
+            except (ValueError, TypeError):
+                p_pos = 1
+            desc = str(p.get("periodDesc") or p.get("description") or "").strip()
+            is_final = bool(p.get("isFinal", False))
+            d_start = str(p.get("dateStart") or "")[:10]
+            d_end = str(p.get("dateEnd") or "")[:10]
+
+            periods.append(
+                SchoolPeriod(
+                    period_code=p_code,
+                    period_pos=p_pos,
+                    description=desc,
+                    is_final=is_final,
+                    date_start=d_start,
+                    date_end=d_end,
+                )
+            )
+
+        periods.sort(key=lambda x: x.period_pos)
+        self._cache_set(cache_key, periods)
+        return periods
+
+    async def get_notes(
+        self, period_filter: str | None = None
+    ) -> list[DisciplinaryNote]:
+        """Fetches disciplinary notes, teacher annotations, and sanctions from /students/{id}/notes/all.
+
+        Iterates through categories:
+        - NTTE: Annotazione del docente
+        - NTCL: Nota di classe
+        - NTWN: Richiamo formale / avvertimento
+        - NTST: Sanzione disciplinare
+
+        If note body (evtText) is empty or truncated, calls POST /students/{id}/notes/{kind}/read/{evtId}
+        to fetch full text.
+        """
+        resp = await self._request("GET", "/students/{student_id}/notes/all")
+        data = resp.json()
+
+        kind_descriptions = {
+            "NTTE": "Nota del docente",
+            "NTCL": "Nota di classe",
+            "NTWN": "Richiamo",
+            "NTST": "Sanzione disciplinare",
+        }
+
+        grouped_items: list[tuple[str, dict[str, Any]]] = []
+        if isinstance(data, dict):
+            for kind in ("NTTE", "NTCL", "NTWN", "NTST"):
+                for it in (data.get(kind) or []):
+                    if isinstance(it, dict):
+                        grouped_items.append((kind, it))
+            if not grouped_items and "notes" in data and isinstance(data["notes"], list):
+                for it in data["notes"]:
+                    if isinstance(it, dict):
+                        k = str(it.get("evtCode") or it.get("kind") or "NTTE").upper()
+                        grouped_items.append((k, it))
+        elif isinstance(data, list):
+            for it in data:
+                if isinstance(it, dict):
+                    k = str(it.get("evtCode") or it.get("kind") or "NTTE").upper()
+                    grouped_items.append((k, it))
+
+        notes: list[DisciplinaryNote] = []
+        for kind, it in grouped_items:
+            evt_id = str(it.get("evtId") or it.get("id") or "")
+            evt_date = str(it.get("evtDate") or it.get("date") or "")[:10]
+            teacher = str(it.get("authorName") or it.get("teacher") or "").strip().title()
+            text = str(it.get("evtText") or it.get("text") or it.get("notes") or "").strip()
+            is_read = bool(it.get("readStatus", False))
+            period = str(it.get("periodCode") or it.get("period") or "").strip()
+
+            if period_filter and period and period_filter.lower() not in period.lower():
+                continue
+
+            if not text and evt_id:
+                try:
+                    read_resp = await self._request(
+                        "POST",
+                        f"/students/{{student_id}}/notes/{kind}/read/{evt_id}",
+                    )
+                    r_json = read_resp.json()
+                    note_body = (
+                        r_json.get("item")
+                        or r_json.get("note")
+                        or (r_json if isinstance(r_json, dict) else {})
+                    )
+                    text = str(
+                        note_body.get("evtText") or note_body.get("text") or ""
+                    ).strip()
+                    is_read = True
+                except Exception as exc:
+                    logger.warning(
+                        "Impossibile recuperare il corpo della nota %s: %s", evt_id, exc
+                    )
+
+            notes.append(
+                DisciplinaryNote(
+                    id=evt_id,
+                    kind=kind,
+                    kind_description=kind_descriptions.get(kind, "Nota disciplinare"),
+                    date=evt_date,
+                    teacher=teacher,
+                    text=text,
+                    is_read=is_read,
+                )
+            )
+
+        notes.sort(key=lambda x: x.date, reverse=True)
+        return notes
+
+    async def get_documents(self) -> list[SchoolDocument]:
+        """Fetches official school documents and report cards from POST /students/{id}/documents."""
+        cache_key = "documents"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[no-any-return]
+
+        resp = await self._request("POST", "/students/{student_id}/documents")
+        data = resp.json()
+        raw_docs: list[dict[str, Any]] = []
+        if isinstance(data, list):
+            raw_docs.extend(data)
+        elif isinstance(data, dict):
+            raw_docs.extend(data.get("documents") or [])
+            raw_docs.extend(data.get("schoolReports") or [])
+
+        docs: list[SchoolDocument] = []
+        for d in raw_docs:
+            if not isinstance(d, dict):
+                continue
+            d_hash = str(d.get("hash") or d.get("id") or d.get("docHash") or "").strip()
+            title = str(
+                d.get("desc") or d.get("title") or d.get("description") or "Documento"
+            ).strip()
+            d_type = str(d.get("docType") or d.get("type") or "").strip()
+            pub_date = str(d.get("pubDT") or d.get("publishDate") or d.get("date") or "")[:10]
+
+            if d_hash:
+                docs.append(
+                    SchoolDocument(
+                        hash=d_hash,
+                        title=title,
+                        document_type=d_type,
+                        publish_date=pub_date,
+                    )
+                )
+
+        docs.sort(key=lambda x: x.publish_date, reverse=True)
+        self._cache_set(cache_key, docs)
+        return docs
+
+    async def download_document(
+        self,
+        doc_hash: str,
+        *,
+        max_bytes: int = MAX_ATTACHMENT_BYTES,
+    ) -> bytes:
+        """Downloads an official school document (e.g. report card) with byte streaming."""
+        if not self._token or not self._student_id:
+            await self.login()
+
+        url = f"{BASE_URL}/students/{self._student_id}/documents/read/{doc_hash}"
+        headers = dict(DEFAULT_HEADERS)
+        headers.pop("Content-Type", None)
+        headers["Z-Auth-Token"] = self._token
+
+        client = (
+            self._external_client
+            if self._external_client is not None
+            else self._http()
+        )
+        async with client.stream("POST", url, headers=headers) as response:
+            if response.status_code in (301, 302, 303, 307, 308):
+                location = response.headers.get("location", "")
+                if not location:
+                    raise ClasseVivaError("Redirect documento senza header Location.")
+                target = urljoin(url, location)
+                parsed = urlparse(target)
+                if parsed.scheme != "https" or not self._is_allowed_attachment_host(
+                    parsed.hostname or ""
+                ):
+                    raise ClasseVivaError("Redirect documento verso host non consentito.")
+                async with client.stream("GET", target, headers={}) as cdn_response:
+                    cdn_response.raise_for_status()
+                    return await self._read_limited(cdn_response, max_bytes)
+
+            response.raise_for_status()
+            return await self._read_limited(response, max_bytes)
+
+    async def get_schoolbooks(
+        self, subject_filter: str | None = None
+    ) -> list[SchoolBook]:
+        """Fetches adopted school textbooks from /students/{id}/schoolbooks."""
+        cache_key = "schoolbooks"
+        cached = self._cache_get(cache_key)
+        if cached is None:
+            cached = await self._fetch_json(
+                cache_key, "/students/{student_id}/schoolbooks", "schoolbooks"
+            )
+
+        books: list[SchoolBook] = []
+        for b in cached:
+            if not isinstance(b, dict):
+                continue
+            subj = str(
+                b.get("subject") or b.get("materia") or b.get("subjectDesc") or ""
+            ).strip().title()
+            if subject_filter and subject_filter.lower() not in subj.lower():
+                continue
+
+            isbn = str(b.get("isbn") or b.get("codiceIsbn") or "").strip()
+            title = str(b.get("title") or b.get("titolo") or "").strip()
+            authors = str(
+                b.get("authors") or b.get("author") or b.get("autori") or b.get("authorName") or ""
+            ).strip().title()
+            publisher = str(b.get("publisher") or b.get("editore") or "").strip()
+            volume = str(b.get("volume") or b.get("vol") or "").strip()
+
+            raw_price = b.get("price") or b.get("prezzo")
+            price: float | None = None
+            if raw_price is not None:
+                try:
+                    price = float(str(raw_price).replace(",", "."))
+                except (ValueError, TypeError):
+                    price = None
+
+            is_rec = bool(b.get("isRecommended") or b.get("consigliato", False))
+            to_buy_val = (
+                b.get("toBuy") if b.get("toBuy") is not None else b.get("daAcquistare")
+            )
+            to_buy = bool(to_buy_val) if to_buy_val is not None else (not is_rec)
+
+            books.append(
+                SchoolBook(
+                    isbn=isbn,
+                    title=title,
+                    authors=authors,
+                    publisher=publisher,
+                    subject=subj,
+                    volume=volume,
+                    price=price,
+                    to_buy=to_buy,
+                    is_recommended=is_rec,
+                )
+            )
+
+        books.sort(key=lambda x: (x.subject, x.title))
+        return books
+

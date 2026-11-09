@@ -7,6 +7,7 @@ import re
 import sys
 import unicodedata
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
 
 try:
@@ -29,6 +30,8 @@ from classeviva_mcp.models import (
     today_rome_str,
 )
 from classeviva_mcp.pdf_utils import (
+    _prune_attachments_dir,
+    _write_private_bytes,
     extract_attachment_text,
     extract_pdf_text,
     render_scanned_pdf_pages,
@@ -76,7 +79,10 @@ else:
         "`classeviva-mcp set-classroom-url` nel terminale, così il segreto non passa dal provider AI.\n"
         "5. Non inventare numeri: per le assenze da giustificare usa `unjustified_count` (0 = nessuna), "
         "non `total_events` che conta anche ritardi, uscite e assenze già giustificate. "
-        "Se un tool restituisce `warnings`, riportali allo studente invece di ignorarli."
+        "Se un tool restituisce `warnings`, riportali allo studente invece di ignorarli.\n"
+        "6. Per materiali e compiti dei docenti usa `list_didactics` e `download_didactics_item`. "
+        "Per festività e ponti usa `get_calendar`. Per documenti e pagelle usa `get_documents`. "
+        "Per libri di testo usa `get_schoolbooks`. Le note disciplinari (`get_notes`) sono escluse dallo snapshot."
     )
 
 mcp = MCPServer("classeviva-mcp", instructions=AGENT_INSTRUCTIONS)
@@ -97,6 +103,17 @@ def _ensure_writable() -> None:
         raise PermissionError(
             "Operazione non consentita: il server è configurato in CLASSEVIVA_READ_ONLY_MODE."
         )
+
+
+_IT_DAYS = {
+    1: "Lunedì",
+    2: "Martedì",
+    3: "Mercoledì",
+    4: "Giovedì",
+    5: "Venerdì",
+    6: "Sabato",
+    7: "Domenica",
+}
 
 
 _AGENDA_KIND_ALIASES = {
@@ -768,32 +785,452 @@ async def get_absences() -> dict[str, Any]:
     }
 
 
+
+
+
+async def list_didactics(
+    subject: str = "",
+    teacher: str = "",
+) -> dict[str, Any]:
+    """Elenca e filtra i materiali didattici e i compiti condivisi dai docenti (Didattica) su ClasseViva.
+    I contenuti sono organizzati per cartella creata dal docente, con nome cartella, materia, docente
+    e lista dei file allegati (id, nome file, dimensione in byte, estensione/tipo e data di condivisione).
+    Usa l'ID del file (`file_id`) con il tool `download_didactics_item` per scaricare ed estrarre il testo del file.
+    `subject` filtra per materia (sottostringa case-insensitive); `teacher` per cognome del docente.
+    """
+    _ensure_writable()
+    subj_filter = subject.strip()
+    subj_clean = subj_filter.lower()
+    teacher_filter = teacher.strip()
+    teacher_clean = teacher_filter.lower()
+
+    warnings: list[str] = []
+    try:
+        if hasattr(_client, "get_didactics"):
+            all_folders = await _client.get_didactics()
+        else:
+            all_folders = []
+    except Exception as exc:  # noqa: BLE001 - keep response resilient
+        logger.warning("Materiali didattici non disponibili: %s", type(exc).__name__)
+        all_folders = []
+        warnings.append(
+            f"Materiali didattici non disponibili in questo momento (errore API: {type(exc).__name__})."
+        )
+
+    filtered_folders: list[dict[str, Any]] = []
+    total_files = 0
+    for folder in all_folders:
+        t_name = getattr(folder, "teacher_name", "") or ""
+        f_name = getattr(folder, "folder_name", "") or ""
+        if teacher_clean and teacher_clean not in t_name.lower():
+            continue
+        if subj_clean and subj_clean not in f_name.lower():
+            continue
+        folder_dict = folder.model_dump() if hasattr(folder, "model_dump") else dict(folder)
+        filtered_folders.append(folder_dict)
+        files = folder_dict.get("files", [])
+        total_files += len(files)
+
+    if not filtered_folders:
+        if subj_clean or teacher_clean:
+            criteria = []
+            if subj_clean:
+                criteria.append(f"materia '{subj_filter}'")
+            if teacher_clean:
+                criteria.append(f"docente '{teacher_filter}'")
+            summary = f"Nessun materiale didattico trovato per {' e '.join(criteria)}."
+        else:
+            summary = "Nessun materiale didattico presente nella sezione Didattica."
+    else:
+        summary = f"Trovate {len(filtered_folders)} cartelle e {total_files} file nei materiali didattici."
+
+    return {
+        "today": today_rome_str(),
+        "subject_filter": subj_filter or None,
+        "teacher_filter": teacher_filter or None,
+        "folders_count": len(filtered_folders),
+        "files_count": total_files,
+        "summary": summary,
+        "folders": filtered_folders,
+        "warnings": warnings,
+    }
+
+
+async def download_didactics_item(
+    file_id: int,
+    destination_folder: str = "",
+) -> dict[str, Any]:
+    """Scarica sul disco locale un singolo file dai materiali didattici specificandone il `file_id`.
+    Se il file scaricato è un documento di testo o foglio (.pdf, .docx, .xlsx, .txt, .csv),
+    estrae automaticamente il testo leggibile per l'agente tramite il motore di parsing integrato.
+    Il file viene salvato con permessi privati (0o600) nella cartella predefinita di classeviva-mcp
+    o nel percorso personalizzato indicato in `destination_folder`.
+    """
+    _ensure_writable()
+    raw_bytes, file_name, content_type = await _client.download_didactics_file(file_id)
+
+    default_didactics_dir = (_store.data_dir / "didactics").resolve()
+    if destination_folder.strip():
+        out_dir = Path(destination_folder).expanduser().resolve()
+    else:
+        out_dir = default_didactics_dir
+    out_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+    safe_id = "".join(c for c in str(file_id) if c.isalnum() or c in ("-", "_"))
+    clean_name = re.sub(r'[<>:"/\\|?*]', "_", file_name).strip() if file_name else ""
+    if not clean_name:
+        clean_name = f"didattica_{safe_id}.bin"
+
+    if clean_name.startswith(f"{safe_id}_"):
+        target = out_dir / clean_name
+    else:
+        target = out_dir / f"{safe_id}_{clean_name}"
+
+    _write_private_bytes(target, raw_bytes)
+    if not destination_folder.strip() or out_dir == default_didactics_dir:
+        _prune_attachments_dir(out_dir)
+
+    try:
+        extracted_text = extract_attachment_text(raw_bytes, file_name=file_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Estrazione testo fallita per '%s': %s", file_name or safe_id, exc)
+        extracted_text = ""
+    is_text_truncated = False
+    max_chars = 10_000
+    if len(extracted_text) > max_chars:
+        extracted_text = extracted_text[:max_chars] + f"\n... [Testo troncato: {len(extracted_text)} caratteri totali]"
+        is_text_truncated = True
+
+    size_kb = len(raw_bytes) / 1024
+    if extracted_text:
+        summary = f"File '{file_name or safe_id}' ({size_kb:.1f} KB) scaricato ed estratto con successo."
+    else:
+        summary = f"File '{file_name or safe_id}' ({size_kb:.1f} KB) scaricato con successo (nessun testo estraibile)."
+
+    return {
+        "file_id": file_id,
+        "file_name": file_name,
+        "content_type": content_type,
+        "size_bytes": len(raw_bytes),
+        "saved_path": str(target),
+        "text": extracted_text,
+        "is_text_truncated": is_text_truncated,
+        "summary": summary,
+    }
+
+
+async def get_calendar(
+    days_ahead: int = 30,
+) -> dict[str, Any]:
+    """Restituisce il calendario scolastico ufficiale estraendo i giorni di vacanza, ponti e festività
+    (giorni con codice 'HD' = Holiday) da oggi fino a `days_ahead` giorni in avanti (1-180, default 30).
+    Riconosce festività nazionali, patroni, ponti deliberati dal consiglio di istituto e periodi di vacanza.
+    """
+    _ensure_writable()
+    days = max(1, min(180, days_ahead))
+    today = now_rome().date()
+    start_str = today.strftime("%Y-%m-%d")
+    end_date = today + timedelta(days=days)
+    end_str = end_date.strftime("%Y-%m-%d")
+
+    warnings: list[str] = []
+    try:
+        if hasattr(_client, "get_calendar"):
+            raw_days = await _client.get_calendar()
+        else:
+            raw_days = []
+    except Exception as exc:  # noqa: BLE001 - resilient partial returns
+        logger.warning("Calendario non disponibile: %s", type(exc).__name__)
+        raw_days = []
+        warnings.append(
+            f"Calendario scolastico non disponibile in questo momento (errore API: {type(exc).__name__})."
+        )
+
+    holidays: list[dict[str, Any]] = []
+    for d in raw_days:
+        d_date = getattr(d, "date", "") or ""
+        d_status = getattr(d, "status", "") or ""
+        if start_str <= d_date <= end_str and d_status == "HD":
+            dow = getattr(d, "day_of_week", 0)
+            dow_name = _IT_DAYS.get(dow, "")
+            desc = getattr(d, "description", "") or "Festività"
+            holidays.append({
+                "date": d_date,
+                "day_of_week": dow_name,
+                "status": d_status,
+                "description": desc,
+            })
+
+    holidays.sort(key=lambda x: x["date"])
+
+    if not holidays:
+        summary = f"Nessun giorno festivo o vacanza nei prossimi {days} giorni."
+    else:
+        first = holidays[0]
+        desc_part = f" ({first['description']})" if first.get("description") else ""
+        first_info = f" (prossimo: {first['date']}{desc_part})"
+        summary = f"Trovati {len(holidays)} giorni festivi/ponti nei prossimi {days} giorni{first_info}."
+
+    return {
+        "today": start_str,
+        "range": {"start_date": start_str, "end_date": end_str},
+        "days_ahead": days,
+        "holidays_count": len(holidays),
+        "holidays": holidays,
+        "summary": summary,
+        "warnings": warnings,
+    }
+
+
+async def get_notes(
+    period: str = "",
+) -> dict[str, Any]:
+    """[DATI PERSONALI] Restituisce le note disciplinari, i richiami e le annotazioni sul registro,
+    recuperando il corpo testuale completo e l'autore per ciascuna nota tramite la chiamata di lettura dedicata.
+    Tipi di eventi supportati: NTTE (nota docente), NTCL (nota di classe), NTWN (avviso/richiamo), NTST (sanzione).
+    `period` permette di filtrare per periodo o etichetta quadrimestre.
+    ATTENZIONE: Le note disciplinari sono categoricamente ESCLUSE dallo snapshot automatico `get_snapshot` per tutela e serenità dello studente.
+    """
+    _ensure_writable()
+    period_clean = period.strip()
+    warnings: list[str] = []
+    try:
+        if hasattr(_client, "get_notes"):
+            raw_notes = await _client.get_notes(period_filter=period_clean or None)
+        else:
+            raw_notes = []
+    except Exception as exc:  # noqa: BLE001 - resilient partial returns
+        logger.warning("Note disciplinari non disponibili: %s", type(exc).__name__)
+        raw_notes = []
+        warnings.append(
+            f"Note disciplinari non disponibili in questo momento (errore API: {type(exc).__name__})."
+        )
+
+    breakdown = {
+        "teacher_notes": 0,
+        "class_notes": 0,
+        "warnings": 0,
+        "sanctions": 0,
+    }
+
+    notes_list: list[dict[str, Any]] = []
+    for n in raw_notes:
+        kind = getattr(n, "kind", "") or ""
+        kind_upper = kind.upper()
+        if kind_upper == "NTTE":
+            breakdown["teacher_notes"] += 1
+        elif kind_upper == "NTCL":
+            breakdown["class_notes"] += 1
+        elif kind_upper == "NTWN":
+            breakdown["warnings"] += 1
+        elif kind_upper == "NTST":
+            breakdown["sanctions"] += 1
+
+        notes_list.append({
+            "id": getattr(n, "id", ""),
+            "date": getattr(n, "date", ""),
+            "author": getattr(n, "teacher", ""),
+            "kind": kind,
+            "kind_description": getattr(n, "kind_description", ""),
+            "text": getattr(n, "text", ""),
+            "is_read": bool(getattr(n, "is_read", False)),
+        })
+
+    notes_list.sort(key=lambda x: x["date"], reverse=True)
+
+    if not notes_list:
+        summary = "Nessuna nota disciplinare registrata."
+    else:
+        parts: list[str] = []
+        if breakdown["teacher_notes"]:
+            parts.append(f"{breakdown['teacher_notes']} del docente")
+        if breakdown["class_notes"]:
+            parts.append(f"{breakdown['class_notes']} di classe")
+        if breakdown["warnings"]:
+            parts.append(f"{breakdown['warnings']} richiami")
+        if breakdown["sanctions"]:
+            parts.append(f"{breakdown['sanctions']} sanzioni")
+        breakdown_str = f" ({', '.join(parts)})" if parts else ""
+        label = "nota disciplinare registrata" if len(notes_list) == 1 else "note disciplinari registrate"
+        summary = f"{len(notes_list)} {label}{breakdown_str}."
+
+    return {
+        "today": today_rome_str(),
+        "period_filter": period_clean or None,
+        "count": len(notes_list),
+        "breakdown": breakdown,
+        "summary": summary,
+        "notes": notes_list,
+        "warnings": warnings,
+    }
+
+
+async def get_documents() -> dict[str, Any]:
+    """[DATI PERSONALI] Restituisce l'elenco dei documenti ufficiali di scrutinio e della scuola
+    (es. pagella 1° quadrimestre, pagella finale, schede di valutazione, certificati di frequenza)
+    con i relativi identificativi, data di pubblicazione, tipologia e disponibilità del file.
+    """
+    _ensure_writable()
+    warnings: list[str] = []
+    try:
+        if hasattr(_client, "get_documents"):
+            raw_docs = await _client.get_documents()
+        else:
+            raw_docs = []
+    except Exception as exc:  # noqa: BLE001 - resilient partial returns
+        logger.warning("Documenti di scrutinio non disponibili: %s", type(exc).__name__)
+        raw_docs = []
+        warnings.append(
+            f"Documenti di scrutinio non disponibili in questo momento (errore API: {type(exc).__name__})."
+        )
+
+    docs_list: list[dict[str, Any]] = []
+    for d in raw_docs:
+        h = getattr(d, "hash", "") or ""
+        docs_list.append({
+            "id": h,
+            "title": getattr(d, "title", ""),
+            "doc_type": getattr(d, "document_type", ""),
+            "publish_date": getattr(d, "publish_date", ""),
+            "file_hash": h,
+        })
+
+    docs_list.sort(key=lambda x: x["publish_date"], reverse=True)
+
+    if not docs_list:
+        summary = "Nessun documento ufficiale o pagella disponibile."
+    else:
+        label = (
+            "documento ufficiale di scrutinio (pagelle/schede)"
+            if len(docs_list) == 1
+            else "documenti ufficiali di scrutinio (pagelle/schede)"
+        )
+        summary = f"Trovati {len(docs_list)} {label}."
+
+    return {
+        "today": today_rome_str(),
+        "count": len(docs_list),
+        "summary": summary,
+        "documents": docs_list,
+        "warnings": warnings,
+    }
+
+
+async def get_schoolbooks(
+    subject: str = "",
+) -> dict[str, Any]:
+    """Restituisce l'elenco dei libri di testo adottati per la classe dello studente, con codice ISBN,
+    titolo, autore, editore, volume, prezzo e indicazione se il libro è da acquistare (obbligatorio o consigliato).
+    `subject` permette di filtrare per materia (sottostringa case-insensitive).
+    """
+    _ensure_writable()
+    subj_clean = subject.strip()
+    warnings: list[str] = []
+    try:
+        if hasattr(_client, "get_schoolbooks"):
+            raw_books = await _client.get_schoolbooks(subject_filter=subj_clean or None)
+        else:
+            raw_books = []
+    except Exception as exc:  # noqa: BLE001 - resilient partial returns
+        logger.warning("Libri di testo non disponibili: %s", type(exc).__name__)
+        raw_books = []
+        warnings.append(
+            f"Libri di testo non disponibili in questo momento (errore API: {type(exc).__name__})."
+        )
+
+    books_list: list[dict[str, Any]] = []
+    to_buy_count = 0
+    total_cost = 0.0
+
+    for b in raw_books:
+        is_to_buy = bool(getattr(b, "to_buy", True))
+        is_rec = bool(getattr(b, "is_recommended", False))
+        price = getattr(b, "price", None)
+        if is_to_buy:
+            to_buy_count += 1
+            if price is not None:
+                total_cost += float(price)
+
+        books_list.append({
+            "isbn": getattr(b, "isbn", ""),
+            "title": getattr(b, "title", ""),
+            "authors": getattr(b, "authors", ""),
+            "publisher": getattr(b, "publisher", ""),
+            "volume": getattr(b, "volume", ""),
+            "price": price,
+            "subject": getattr(b, "subject", ""),
+            "is_to_buy": is_to_buy,
+            "is_recommended": is_rec,
+        })
+
+    total_cost = round(total_cost, 2)
+
+    if not books_list:
+        summary = f"Nessun libro di testo trovato{' per ' + subj_clean if subj_clean else ''}."
+    else:
+        label = "libro di testo adottato" if len(books_list) == 1 else "libri di testo adottati"
+        filter_str = f" per {subj_clean}" if subj_clean else ""
+        summary = (
+            f"Trovati {len(books_list)} {label}{filter_str} "
+            f"({to_buy_count} da acquistare, spesa stimata: {total_cost:.2f} €)."
+        )
+
+    return {
+        "today": today_rome_str(),
+        "subject_filter": subj_clean or None,
+        "count": len(books_list),
+        "to_buy_count": to_buy_count,
+        "total_cost_to_buy": total_cost,
+        "summary": summary,
+        "schoolbooks": books_list,
+        "warnings": warnings,
+    }
+
+
 async def get_snapshot(days_ahead: int = 7) -> dict[str, Any]:
     """[DATI PERSONALI] Restituisce in **una sola chiamata** lo stato completo dello studente:
-    profilo, contesto, materie, orario, voti con medie, assenze da giustificare, compiti e agenda.
+    profilo, contesto, materie, orario, voti con medie, assenze da giustificare, compiti, agenda,
+    prossime festività/ponti e materiali didattici.
 
-    Pensato per i workflow avanzati: invece di 6-8 chiamate separate (e altrettante
-    richieste di rete) l'agente ne fa una sola, e le 5 richieste HTTP partono in
-    parallelo. `days_ahead` (1-60, default 7) delimita compiti e agenda.
+    Pensato per i workflow avanzati: invece di 8-10 chiamate separate (e altrettante
+    richieste di rete) l'agente ne fa una sola, e le richieste HTTP partono in
+    parallelo. `days_ahead` (1-60, default 7) delimita compiti, agenda e prossime festività.
+    ATTENZIONE: Le note disciplinari sono categoricamente ESCLUSE dallo snapshot per rispetto della privacy dello studente.
     In modalità read-only il tool non viene registrato.
     """
     days = max(1, min(60, days_ahead))
     start = now_rome().strftime("%Y-%m-%d")
     end = (now_rome() + timedelta(days=days)).strftime("%Y-%m-%d")
 
-    context, grades, absences, homework, agenda = await asyncio.gather(
+    context, grades, absences, homework, agenda, calendar, didactics = await asyncio.gather(
         get_today_context(),
         get_grades(),
         get_absences(),
         get_homework(days_ahead=days),
         get_agenda(start_date=start, end_date=end),
+        get_calendar(days_ahead=days),
+        list_didactics(),
     )
     all_warnings: list[str] = []
-    for section in (context, grades, homework, agenda):
+    for section in (context, grades, absences, homework, agenda, calendar, didactics):
         for warning in section.get("warnings", []):
             if warning not in all_warnings:
                 all_warnings.append(warning)
-    return {
+
+    upcoming_holidays = {
+        "count": calendar.get("holidays_count", 0),
+        "days_ahead": days,
+        "holidays": calendar.get("holidays", []),
+        "summary": calendar.get("summary", ""),
+    }
+    didactics_summary = {
+        "folders_count": didactics.get("folders_count", 0),
+        "files_count": didactics.get("files_count", 0),
+        "new_didactics_count": didactics.get("files_count", 0),
+        "summary": didactics.get("summary", ""),
+    }
+
+    result = {
         "today": start,
         "range": {"start_date": start, "end_date": end},
         "profile": context.get("profile"),
@@ -831,8 +1268,14 @@ async def get_snapshot(days_ahead: int = 7) -> dict[str, Any]:
             "warnings": agenda["warnings"],
             "events": agenda["events"],
         },
+        "upcoming_holidays": upcoming_holidays,
+        "didactics": didactics_summary,
         "warnings": all_warnings,
     }
+    assert (
+        "notes" not in result and "disciplinary_notes" not in result
+    ), "Security violation: disciplinary notes found in snapshot"
+    return result
 
 
 @mcp.tool()
@@ -920,9 +1363,11 @@ async def read_notice_pdf(
     - Se un allegato PDF è una scansione senza testo selezionabile (< 50 caratteri), renderizza automaticamente
       le pagine a 150 DPI in immagini PNG (`rendered_page_images`) così l'agent può leggerle tramite Vision.
     - `attachment_index` (0-based) permette di selezionare un singolo allegato se la circolare ne ha più d'uno.
-    - ATTENZIONE: Spaggiari restituisce testo e allegati completi solo dopo aver segnato la circolare come letta.
-      Il default è `allow_mark_as_read=False`: se la circolare è nuova il tool restituisce solo i metadati senza
-      modificare lo stato remoto. Passa `allow_mark_as_read=True` solo dopo aver avvisato lo studente.
+    - Sblocco automatico allegati (404): se un allegato restituisce 404 perché non ancora aperto sul registro,
+      il client esegue automaticamente la richiesta di lettura per sbloccarlo e riprova il download,
+      restituendo `notice_marked_as_read: True`.
+    - ATTENZIONE: Il default è `allow_mark_as_read=False`: se la circolare è nuova il tool restituisce solo
+      i metadati senza modificare lo stato remoto. Passa `allow_mark_as_read=True` solo dopo aver avvisato lo studente.
       In modalità read-only il valore viene forzato a False.
     """
     ctx = _store.load_student_context()
@@ -945,7 +1390,7 @@ async def read_notice_pdf(
         "attachments_total": int(raw.get("attachments_total", 0)),
         "filter_keyword_used": effective_filter or None,
         "read_only_mode": READ_ONLY_MODE,
-        "notice_marked_as_read": bool(raw.get("marked_as_read", False)),
+        "notice_marked_as_read": bool(raw.get("marked_as_read", False) or raw.get("notice_marked_as_read", False)),
         "notice_was_unread": bool(raw.get("was_unread", False)),
         "notice_read_state_known": bool(raw.get("read_state_known", False)),
         "citation": f"Circolare ID #{notice_id} (Bacheca ClasseViva)",
@@ -1088,6 +1533,32 @@ def notices_brief() -> str:
     )
 
 
+def recap_settimanale(days_ahead: int = 7) -> str:
+    """Genera un riepilogo settimanale completo: orario, compiti, verifiche in programma, prossimi ponti/vacanze e circolari rilevanti."""
+    return (
+        f"Genera un riassunto settimanale strutturato e compatto per i prossimi {days_ahead} giorni:\n"
+        "1) Chiama `get_today_context` per conoscere il giorno corrente, l'orario scolastico salvato e le materie.\n"
+        f"2) Chiama `get_homework(days_ahead={days_ahead})` per elencare tutti i compiti a casa e le scadenze ordinate per data.\n"
+        f"3) Chiama `get_calendar(days_ahead={days_ahead})` per evidenziare eventuali giorni di vacanza, ponti o festività in arrivo.\n"
+        "4) Chiama `list_notices(limit=10)` per individuare eventuali circolari urgenti o rilevanti per la classe dello studente.\n"
+        "Organizza la risposta con sezioni chiare: '📅 Tabella di Marcia', '📝 Compiti e Verifiche', '🎉 Vacanze e Ponti', '📌 Circolari da Sapere'."
+    )
+
+
+def piano_recupero_materie(subject: str = "") -> str:
+    """Analizza le materie con voti insufficienti e predispone un piano di studio strategico giorno per giorno con target matematici."""
+    subj_filter = f" per la materia '{subject}'" if subject else " per tutte le materie insufficienti (< 6.0)"
+    return (
+        f"Voglio impostare un piano di recupero intensivo{subj_filter}:\n"
+        "1) Chiama `get_grades` per identificare le materie con media inferiore a 6.0, i voti negativi e i relativi pesi.\n"
+        "2) Per ciascuna materia insufficiente:\n"
+        "   - Chiama `calculate_grade_target(subject=..., target_average=6.0)` per stabilire il voto esatto necessario alla prossima verifica.\n"
+        "   - Chiama `get_lessons(subject=...)` per rivedere gli argomenti spiegati dal professore nelle ultime settimane.\n"
+        "   - Chiama `get_agenda(kind='exam')` per verificare se è già programmata la prossima data di verifica o interrogazione.\n"
+        "3) Struttura un programma di studio operativo giorno per giorno, con priorità agli argomenti critici e simulazione dei voti obiettivo."
+    )
+
+
 # --- MCP resources ---------------------------------------------------------
 # Resources are the read-only counterpart of tools: the client pulls a
 # document addressed by URI, can cache it and reuse it without paying another
@@ -1189,9 +1660,17 @@ if not READ_ONLY_MODE:
     mcp.tool()(calculate_grade_target)
     mcp.tool()(get_absences)
     mcp.tool()(get_snapshot)
+    mcp.tool()(list_didactics)
+    mcp.tool()(download_didactics_item)
+    mcp.tool()(get_calendar)
+    mcp.tool()(get_notes)
+    mcp.tool()(get_documents)
+    mcp.tool()(get_schoolbooks)
     mcp.prompt()(setup)
     mcp.prompt()(daily_brief)
     mcp.prompt()(recovery_plan)
+    mcp.prompt(name="recap-settimanale")(recap_settimanale)
+    mcp.prompt(name="piano-recupero-materie")(piano_recupero_materie)
     # Personal resources follow the same rule as the personal tools.
     mcp.resource(
         "classeviva://grades",
