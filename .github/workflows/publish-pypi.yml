@@ -1,11 +1,9 @@
 name: Publish to PyPI
 
 on:
-  # Manual trigger while the PyPI Trusted Publisher is being configured.
-  # Once the publisher is registered, switch to:
-     release:
-       types: [published]
-  # workflow_dispatch:
+  release:
+    types: [published]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -29,7 +27,7 @@ jobs:
         run: uv build --out-dir dist
 
       - name: Verify the metadata
-        run: uv run python -m twine check dist/*
+        run: uv run --extra dev python -m twine check dist/*
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
