@@ -4,6 +4,39 @@ Tutte le modifiche rilevanti sono documentate in questo file.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e il
 progetto adotta [Semantic Versioning](https://semver.org/lang/it/).
 
+## [1.3.0] - 2026-11-09
+
+### Fixed
+
+- **JSON MCP non più legato alla cache di uv**: eseguendo `uvx classeviva-mcp login`
+  il JSON stampato puntava a `...\uv\cache\archive-v0\<hash>\Scripts\classeviva-mcp.EXE`,
+  un ambiente temporaneo che uv elimina o rigenera (pulizia cache, nuova versione,
+  profili scolastici ripuliti al logoff). Ora l'ambiente temporaneo viene riconosciuto
+  e il JSON usa `uvx classeviva-mcp`; con `uv tool install` usa lo shim stabile.
+- **Reti scolastiche**: i client HTTP ignoravano il proxy di sistema
+  (`trust_env=False`) e verificavano solo contro `certifi`, quindi dietro un proxy
+  o un filtro HTTPS con certificato della scuola ogni richiesta falliva. Ora si usano
+  proxy e certificati di sistema (`truststore`), con opt-out `CLASSEVIVA_PROXY=off`
+  e `CLASSEVIVA_TLS=certifi`.
+- **Errori di login comprensibili**: credenziali rifiutate (es. codice `251`),
+  pagina HTML di un filtro web, errori TLS/proxy/timeout e 5xx producono messaggi
+  distinti con suggerimenti (codice `S...` al posto dell'email, attesa dopo troppi
+  tentativi, accesso solo Google/SPID).
+- **Niente più blocco dell'account per tentativi ripetuti**: dopo una password
+  rifiutata il server sospende per 10 minuti i nuovi login con le stesse credenziali.
+- **`get_snapshot`** non segnala più "Classroom non disponibile" quando Classroom
+  non è configurato.
+
+### Added
+
+- `classeviva-mcp config [--client generic|opencode|vscode|codex|claude-code]`
+  stampa la configurazione MCP senza rifare il login; `login --client` idem.
+- `doctor` mostra versione, metodo di avvio consigliato, proxy/TLS in uso, tipo di
+  identificativo (email o codice) e se le variabili d'ambiente hanno la precedenza.
+- `login` rifiuta l'esecuzione non interattiva (da agente AI), rileva caratteri di
+  controllo incollati nella password (`^V`) e ricorda che le credenziali precedenti
+  restano attive se la nuova password è errata.
+
 ## [1.2.1] - 2026-11-08
 
 ### Fixed
