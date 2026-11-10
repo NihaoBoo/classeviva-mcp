@@ -158,24 +158,51 @@ process and talks to it over pipes. No port is opened and no network listener
 exists, so the server is reachable only by whoever can run a process as that
 user.
 
-The optional `streamable-http` transport opens a TCP port and is therefore
-**always protected by a bearer token**:
+The optional `streamable-http` transport opens a TCP port and therefore
+**always requires authentication**, in one of two modes.
 
-- the token is required in the `Authorization: Bearer <token>` header; without
-  it the server answers `401 Unauthorized` and runs nothing;
-- the comparison is constant-time (`hmac.compare_digest`);
-- the middleware is implemented at the ASGI level, so it never interferes with
-  the SSE streaming of the transport;
-- the token is resolved from `--token-file`, then `CLASSEVIVA_MCP_TOKEN`, then
-  generated once and stored as `mcp_token.json` in the data directory
-  (DPAPI-encrypted on Windows, `0600` on Linux/macOS);
-- the server binds to `127.0.0.1` by default and prints a loud warning when it
-  is asked to bind to a routable address.
+**Static bearer token** (`--auth token`, default without `--public-url`):
 
-The transport is **single-tenant**: whoever holds the token can read the whole
-registry. The traffic is **not encrypted** — over anything but loopback, use a
-trusted private network or a tunnel (Tailscale, SSH). This is not a
-multi-user system and does not replace per-caller authorization.
+- required in the `Authorization: Bearer <token>` header, compared in constant
+  time (`hmac.compare_digest`) by an ASGI-level middleware that does not
+  interfere with SSE streaming;
+- resolved from `--token-file`, then `CLASSEVIVA_MCP_TOKEN`, then the token
+  saved by a previous run, then generated once (256 bits) and stored as
+  `mcp_token.json` (DPAPI on Windows, `0600` on Linux/macOS).
+
+**Self-hosted OAuth 2.1** (`--auth oauth`, default with `--public-url`), for
+hosted clients such as Claude web/mobile and ChatGPT:
+
+- authorization server endpoints, PKCE (S256 only) and RFC 7591 registration
+  come from the official MCP Python SDK; tokens are bound to the
+  `<public-url>/mcp` resource (RFC 8707) and validated against it;
+- one resource owner. Consent requires the owner passphrase chosen during
+  `remote-setup` (hidden input, at least 12 characters, never printed; stored
+  as an scrypt hash). After 5 wrong attempts consent is locked with
+  exponential backoff (max 15 minutes);
+- Client ID Metadata Documents are fetched only over HTTPS from an allowlist
+  (`claude.ai`, `chatgpt.com`, extendable with `CLASSEVIVA_OAUTH_CIMD_HOSTS`),
+  capped at 16 KB, with no redirects;
+- access tokens last 1 hour, refresh tokens 30 days and are rotated on every
+  use; presenting a rotated refresh token revokes the whole grant. Only
+  SHA-256 hashes of tokens are stored (`oauth_state.json`, DPAPI/`0600`);
+- the consent page sends `X-Frame-Options: DENY`, a restrictive CSP and
+  `Cache-Control: no-store`, and shows the redirect host;
+- `remote-revoke` drops every grant and the bearer token; `remote-setup
+  --rotate` also replaces the passphrase.
+
+Common to both modes:
+
+- the server binds to `127.0.0.1`; a routable `--host` is refused unless
+  `--allow-lan` is given, because HTTP itself is not encrypted. Publish it
+  through an HTTPS tunnel (Tailscale Funnel, Cloudflare Tunnel);
+- DNS-rebinding protection (`Host`/`Origin` checks) stays enabled and accepts
+  only loopback names and the host of `--public-url`;
+- `X-Forwarded-*` headers are trusted only from the local tunnel daemon and the
+  `Server` header is not sent.
+
+The transport is **single-tenant**: whoever is authorized can read the whole
+registry. Every student runs their own server; this is not a multi-user system.
 
 ### Resources
 

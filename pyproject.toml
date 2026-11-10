@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "classeviva-mcp"
-version = "1.4.0"
+version = "1.5.0"
 description = "Server MCP (Model Context Protocol) per il registro elettronico Spaggiari ClasseViva e Google Classroom iCal"
 readme = "README.md"
 license = "MIT"

@@ -4,6 +4,33 @@ Tutte le modifiche rilevanti sono documentate in questo file.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e il
 progetto adotta [Semantic Versioning](https://semver.org/lang/it/).
 
+## [1.5.0] - 2026-11-10
+
+### Added
+
+- **Accesso remoto OAuth 2.1 self-hosted** per le app Claude (web, desktop,
+  mobile) e ChatGPT: `serve --transport streamable-http --public-url <https>`
+  fa anche da server di autorizzazione per un solo proprietario. Il consenso si
+  dà con la passphrase scelta in `remote-setup` (mai stampata). PKCE S256, registrazione
+  dinamica dei client, Client ID Metadata Document (da host consentiti),
+  revoca, access token di 1 ora e refresh token ruotati con rilevamento del
+  riuso. Su disco solo hash dei token e della passphrase.
+- Nuovi comandi `remote-setup [--rotate]` e `remote-revoke`.
+- Opzioni `serve --public-url`, `--auth oauth|token`, `--allow-lan`.
+
+### Fixed
+
+- **Server HTTP dietro un tunnel**: la protezione DNS rebinding accettava solo
+  `localhost`, quindi le richieste in arrivo da Tailscale Funnel o Cloudflare
+  Tunnel venivano rifiutate. Ora è ammesso anche l'host di `--public-url`.
+- **Token bearer stabile**: veniva rigenerato a ogni avvio (quello salvato non
+  veniva riletto) e scollegava i client.
+
+### Security
+
+- `--host` diverso da loopback richiede `--allow-lan` (prima era solo un avviso).
+- Uvicorn non invia l'header `Server` e accetta `X-Forwarded-*` solo dal tunnel locale.
+
 ## [1.4.0] - 2026-11-09
 
 ### Added

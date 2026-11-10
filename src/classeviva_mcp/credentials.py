@@ -152,6 +152,7 @@ class CredentialStore:
         self.context_file = self.data_dir / "student_context.json"
         self.attachments_dir = self.data_dir / "attachments"
         self.mcp_token_file = self.data_dir / "mcp_token.json"
+        self.oauth_state_file = self.data_dir / "oauth_state.json"
 
     # --- Credentials ---
 
@@ -381,6 +382,16 @@ class CredentialStore:
         except Exception:
             return ""
         return str(data.get("token") or "")
+
+    # --- Remote OAuth state (owner passphrase hash, clients, token hashes) ---
+
+    def load_oauth_state(self) -> dict[str, Any]:
+        if not self.oauth_state_file.exists():
+            return {}
+        return self._read_private_json(self.oauth_state_file)
+
+    def save_oauth_state(self, state: dict[str, Any]) -> None:
+        self._write_private_json(self.oauth_state_file, state)
 
     # --- Session cache ---
 
