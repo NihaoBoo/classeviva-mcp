@@ -511,7 +511,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
 def _cmd_remote_setup(args: argparse.Namespace) -> int:
     """Creates (or rotates) the owner passphrase used to approve remote connectors."""
-    from classeviva_mcp.oauth import MIN_OWNER_PASSPHRASE, owner_passphrase_problem, set_owner_passphrase
+    from classeviva_mcp.oauth import OWNER_PHRASE_MESSAGES, owner_passphrase_problem, set_owner_passphrase
 
     store = CredentialStore()
     try:
@@ -526,12 +526,12 @@ def _cmd_remote_setup(args: argparse.Namespace) -> int:
         print("Errore: `remote-setup` va eseguito in un terminale interattivo.", file=sys.stderr)
         return 1
     print("Scegli la passphrase del proprietario: la userai per approvare ogni app collegata.")
-    print(f"Almeno {MIN_OWNER_PASSPHRASE} caratteri; una frase di 4-5 parole è facile da digitare sul telefono.")
+    print("Almeno 12 caratteri; una frase di 4-5 parole è facile da digitare sul telefono.")
     passphrase = getpass.getpass("Passphrase (nascosta): ")
-    problem = owner_passphrase_problem(passphrase)
-    if problem:
-        print(f"Errore: {problem}", file=sys.stderr)
-        return 1
+    for code, message in OWNER_PHRASE_MESSAGES.items():
+        if owner_passphrase_problem(passphrase) == code:
+            print("Errore: " + message, file=sys.stderr)
+            return 1
     if getpass.getpass("Ripeti la passphrase: ") != passphrase:
         print("Errore: le due passphrase non coincidono.", file=sys.stderr)
         return 1

@@ -97,21 +97,28 @@ def verify_passphrase(passphrase: str, record: dict[str, str]) -> bool:
     return hmac.compare_digest(digest, expected)
 
 
-MIN_OWNER_PASSPHRASE = 12
+MIN_OWNER_PHRASE_CHARS = 12
+
+# Fixed messages (never derived from the secret) for each weakness code.
+OWNER_PHRASE_MESSAGES = {
+    "short": f"la passphrase deve avere almeno {MIN_OWNER_PHRASE_CHARS} caratteri.",
+    "repetitive": "la passphrase è troppo ripetitiva.",
+    "spaces": "la passphrase non può iniziare o finire con spazi.",
+}
 
 
 def owner_passphrase_problem(passphrase: str) -> str | None:
-    """Returns why a chosen owner passphrase is too weak, or None if acceptable.
+    """Returns a weakness code (key of ``OWNER_PHRASE_MESSAGES``) or None.
 
     Brute force is throttled by the consent lockout, but the passphrase guards
     the whole registry from the Internet, so trivial values are refused.
     """
-    if len(passphrase) < MIN_OWNER_PASSPHRASE:
-        return f"la passphrase deve avere almeno {MIN_OWNER_PASSPHRASE} caratteri."
+    if len(passphrase) < MIN_OWNER_PHRASE_CHARS:
+        return "short"
     if len(set(passphrase.lower())) < 6:
-        return "la passphrase è troppo ripetitiva."
+        return "repetitive"
     if passphrase.strip() != passphrase:
-        return "la passphrase non può iniziare o finire con spazi."
+        return "spaces"
     return None
 
 
