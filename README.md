@@ -205,7 +205,7 @@ Ci sono due modi per usare `classeviva-mcp` fuori casa dal telefono:
 Le app mobile (e le attività pianificate) si collegano al **tuo** server dal loro cloud, quindi serve un indirizzo HTTPS pubblico. Nessun servizio di terze parti da gestire: il server stesso fa da server OAuth per **un solo proprietario**, cioè tu.
 
 ```bash
-# 1. Una volta sola: genera la passphrase del proprietario (salvala nel gestore password)
+# 1. Una volta sola: scegli la passphrase del proprietario (inserimento nascosto)
 classeviva-mcp remote-setup
 
 # 2. Pubblica la porta in HTTPS con un tunnel gratuito (es. Tailscale Funnel)

@@ -511,7 +511,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
 def _cmd_remote_setup(args: argparse.Namespace) -> int:
     """Creates (or rotates) the owner passphrase used to approve remote connectors."""
-    from classeviva_mcp.oauth import generate_passphrase, set_owner_passphrase
+    from classeviva_mcp.oauth import MIN_OWNER_PASSPHRASE, owner_passphrase_problem, set_owner_passphrase
 
     store = CredentialStore()
     try:
@@ -522,7 +522,19 @@ def _cmd_remote_setup(args: argparse.Namespace) -> int:
         print("Accesso remoto già configurato. Usa `remote-setup --rotate` per una nuova passphrase")
         print("(scollega anche tutte le app già collegate).")
         return 0
-    passphrase = generate_passphrase()
+    if not sys.stdin.isatty():
+        print("Errore: `remote-setup` va eseguito in un terminale interattivo.", file=sys.stderr)
+        return 1
+    print("Scegli la passphrase del proprietario: la userai per approvare ogni app collegata.")
+    print(f"Almeno {MIN_OWNER_PASSPHRASE} caratteri; una frase di 4-5 parole è facile da digitare sul telefono.")
+    passphrase = getpass.getpass("Passphrase (nascosta): ")
+    problem = owner_passphrase_problem(passphrase)
+    if problem:
+        print(f"Errore: {problem}", file=sys.stderr)
+        return 1
+    if getpass.getpass("Ripeti la passphrase: ") != passphrase:
+        print("Errore: le due passphrase non coincidono.", file=sys.stderr)
+        return 1
     set_owner_passphrase(store.load_oauth_state, store.save_oauth_state, passphrase)
     port = args.port
     print()
@@ -530,10 +542,7 @@ def _cmd_remote_setup(args: argparse.Namespace) -> int:
     print("  ACCESSO REMOTO (OAuth) CONFIGURATO")
     print("=" * 64)
     print()
-    print("  Passphrase del proprietario (mostrata UNA sola volta, salvala")
-    print("  nel tuo gestore di password; serve per approvare ogni app):")
-    print()
-    print(f"      {passphrase}")
+    print("  Salva la passphrase nel tuo gestore di password: qui ne resta solo un hash.")
     print()
     print("  1. Pubblica il server in HTTPS con un tunnel gratuito, ad esempio:")
     print(f"       tailscale funnel --bg {port}")

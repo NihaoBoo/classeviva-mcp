@@ -176,9 +176,10 @@ hosted clients such as Claude web/mobile and ChatGPT:
 - authorization server endpoints, PKCE (S256 only) and RFC 7591 registration
   come from the official MCP Python SDK; tokens are bound to the
   `<public-url>/mcp` resource (RFC 8707) and validated against it;
-- one resource owner. Consent requires the owner passphrase created by
-  `remote-setup` (about 120 bits, stored as an scrypt hash). After 5 wrong
-  attempts consent is locked with exponential backoff (max 15 minutes);
+- one resource owner. Consent requires the owner passphrase chosen during
+  `remote-setup` (hidden input, at least 12 characters, never printed; stored
+  as an scrypt hash). After 5 wrong attempts consent is locked with
+  exponential backoff (max 15 minutes);
 - Client ID Metadata Documents are fetched only over HTTPS from an allowlist
   (`claude.ai`, `chatgpt.com`, extendable with `CLASSEVIVA_OAUTH_CIMD_HOSTS`),
   capped at 16 KB, with no redirects;

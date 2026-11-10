@@ -316,3 +316,10 @@ def test_token_mode_requires_bearer_and_known_host() -> None:
     assert client.post("/mcp", json={}).status_code == 401
     assert client.post("/mcp", json={}, headers={"Host": "evil.example.com"}).status_code == 421
     assert client.post("/mcp", json={}, headers={"Authorization": "Bearer nope"}).status_code == 401
+
+
+def test_owner_passphrase_strength() -> None:
+    assert oauth.owner_passphrase_problem("corto") is not None
+    assert oauth.owner_passphrase_problem("aaaaaaaaaaaaaaa") is not None
+    assert oauth.owner_passphrase_problem(" spazio iniziale ok ") is not None
+    assert oauth.owner_passphrase_problem("cavallo batteria graffetta") is None

@@ -11,7 +11,7 @@ progetto adotta [Semantic Versioning](https://semver.org/lang/it/).
 - **Accesso remoto OAuth 2.1 self-hosted** per le app Claude (web, desktop,
   mobile) e ChatGPT: `serve --transport streamable-http --public-url <https>`
   fa anche da server di autorizzazione per un solo proprietario. Il consenso si
-  dà con la passphrase creata da `remote-setup`. PKCE S256, registrazione
+  dà con la passphrase scelta in `remote-setup` (mai stampata). PKCE S256, registrazione
   dinamica dei client, Client ID Metadata Document (da host consentiti),
   revoca, access token di 1 ora e refresh token ruotati con rilevamento del
   riuso. Su disco solo hash dei token e della passphrase.
