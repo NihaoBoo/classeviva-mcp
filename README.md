@@ -7,8 +7,8 @@
 Incrocia dati presi direttamente dal registro voti, agenda, compiti, argomenti delle lezioni e circolari della bacheca scolastica con qualsiasi agente AI compatibile MCP.
 
 <p align="center">
-  <a href="https://github.com/NihaoBoo/classeviva-mcp/releases"><img src="https://img.shields.io/badge/release-v1.4.0-blue?style=flat-square" alt="release" height="20"></a>&nbsp;
-  <a href="https://pypi.org/project/classeviva-mcp/"><img src="https://img.shields.io/badge/pypi-1.4.0-blue?style=flat-square&logo=pypi&logoColor=white" alt="pypi" height="20"></a>&nbsp;
+  <a href="https://github.com/NihaoBoo/classeviva-mcp/releases"><img src="https://img.shields.io/badge/release-v1.5.0-blue?style=flat-square" alt="release" height="20"></a>&nbsp;
+  <a href="https://pypi.org/project/classeviva-mcp/"><img src="https://img.shields.io/badge/pypi-1.5.0-blue?style=flat-square&logo=pypi&logoColor=white" alt="pypi" height="20"></a>&nbsp;
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white" alt="python" height="20"></a>&nbsp;
   <a href="https://github.com/NihaoBoo/classeviva-mcp"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square" alt="platform" height="20"></a>&nbsp;
   <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/mcp-protocol-brightgreen?style=flat-square" alt="mcp" height="20"></a>&nbsp;
@@ -75,7 +75,7 @@ uvx --from git+https://github.com/NihaoBoo/classeviva-mcp@stable classeviva-mcp 
 
 > **Dove finisce l'installazione?** `uvx` non installa nulla in modo permanente: crea un ambiente temporaneo nella cache di `uv` (es. `%LOCALAPPDATA%\uv\cache` su Windows, `~/.cache/uv` su Linux/macOS) e lo riusa ai comandi successivi. Con `uv tool install` invece il comando `classeviva-mcp` viene installato stabilmente e aggiunto al `PATH`.
 
-> `@stable` punta sempre all'ultima release stabile. Se vuoi bloccare una versione esatta, sostituisci `@stable` con `@v1.4.0`.
+> `@stable` punta sempre all'ultima release stabile. Se vuoi bloccare una versione esatta, sostituisci `@stable` con `@v1.5.0`.
 
 > ⚠️ **Computer di scuola o condivisi**
 > `classeviva-mcp` è pensato per **un solo account su un dispositivo personale**. Non usarlo su un PC con account condiviso (`studente`, `lab`, `aula`...): chiunque usi quell'account può aprire il Keyring e leggere le credenziali, e due studenti che fanno `login` si sovrascrivono a vicenda. Anche con un account personale, un amministratore della macchina può accedere al profilo. Se devi usarlo su un computer non tuo, esegui **`logout --purge` prima di uscire**: non servono privilegi di admin. Dettagli in [SECURITY.md](SECURITY.md#computer-pubblici-o-condivisi).
@@ -200,8 +200,27 @@ Se sei un docente o la tua scuola non blocca le app esterne sull'email istituzio
 
 Ci sono due modi per usare `classeviva-mcp` fuori casa dal telefono:
 
-### Modo 1 — Tramite l'App del tuo Agent o VPS (Senza creare bot)
-Se usi un ambiente che espone i tuoi server MCP in cloud o rete privata (es. sessioni remote di **Antigravity**, **Claude**, **Opencode** o una tua istanza **LibreChat / Open-WebUI** raggiungibile via Tailscale).
+### Modo 1 — App Claude / ChatGPT sul telefono (consigliato, self-hosted)
+
+Le app mobile (e le attività pianificate) si collegano al **tuo** server dal loro cloud, quindi serve un indirizzo HTTPS pubblico. Nessun servizio di terze parti da gestire: il server stesso fa da server OAuth per **un solo proprietario**, cioè tu.
+
+```bash
+# 1. Una volta sola: genera la passphrase del proprietario (salvala nel gestore password)
+classeviva-mcp remote-setup
+
+# 2. Pubblica la porta in HTTPS con un tunnel gratuito (es. Tailscale Funnel)
+tailscale funnel --bg 8765
+
+# 3. Avvia il server con l'indirizzo HTTPS del tunnel
+classeviva-mcp serve --transport streamable-http --public-url https://<nome-pc>.<tailnet>.ts.net
+```
+
+4. **Claude** (web, desktop, mobile): *Impostazioni → Connettori → Aggiungi connettore personalizzato* → URL `https://<nome-pc>.<tailnet>.ts.net/mcp`. **ChatGPT**: *Connettori* in modalità sviluppatore, stesso URL. Si apre una pagina del tuo server: inserisci la passphrase e premi **Consenti**. Basta farlo una volta per ogni app, da web; poi funziona anche dall'app sul telefono.
+
+- Il PC (o un mini-PC / Raspberry / VPS) deve restare acceso: i dati restano lì e le credenziali ClasseViva non lasciano mai la tua macchina.
+- In alternativa a Tailscale puoi usare un **Cloudflare Tunnel** con un tuo dominio. Evita i tunnel "rapidi" con URL casuale: l'URL cambia a ogni riavvio e il connettore smette di funzionare.
+- `classeviva-mcp remote-revoke` scollega tutte le app; `remote-setup --rotate` cambia passphrase e scollega tutto.
+- Per client che permettono di impostare un header (Claude Code, Codex, script, bot) puoi usare invece un token fisso: `serve --transport streamable-http --auth token --print-token` e l'header `Authorization: Bearer <token>`.
 
 ### Modo 2 — Tramite un Bot su Telegram o Discord (solo DM privati)
 `classeviva-mcp` fornisce tool di consultazione del registro e di gestione del contesto locale; per usarlo in una DM privata Telegram o Discord puoi collegarlo a un agente che fa da ponte con la chat (ad esempio **Hermes Agent**, **OpenClaw** o automazioni **n8n**):
@@ -321,40 +340,42 @@ Il tuo client MCP **avvia il server come processo figlio** e comunica con lui at
 
 Questo è il modo usato da tutte le istruzioni di installazione qui sopra.
 
-### `streamable-http` — opzionale, per VPS e bot
+### `streamable-http` — opzionale, per telefono, VPS e bot
 
-Il server si mette in ascolto su una **porta TCP** e il client lo raggiunge via HTTP.
+Il server si mette in ascolto su una **porta TCP locale** e lo pubblichi in HTTPS con un tunnel.
 
 ```
-  Client MCP remoto
-          |  HTTP + header "Authorization: Bearer <token>"
-          v
-  classeviva-mcp serve --transport streamable-http --port 8765
+  App Claude / ChatGPT  ──HTTPS──>  tunnel (Tailscale Funnel / Cloudflare)  ──>  127.0.0.1:8765
+                                                         classeviva-mcp serve --transport streamable-http
 ```
 
-- ✅ Raggiungibile da altri dispositivi: telefono, VPS, bot, n8n.
-- ✅ **Sempre protetto da un bearer token**: senza l'header `Authorization` il server risponde `401 Unauthorized` e non esegue nulla.
-- ⚠️ Il traffico HTTP **non è cifrato**: se lo usi fuori dal localhost, il token viaggia in chiaro. Usa solo una rete privata fidata o un tunnel (Tailscale, SSH).
-- ⚠️ Chi ha il token può leggere **tutto** il tuo registro: è single-tenant, non multi-utente.
+Due modalità di autenticazione, **mai** accesso anonimo:
+
+| Modalità | Quando | Come |
+| --- | --- | --- |
+| `oauth` (default con `--public-url`) | App Claude web/mobile, ChatGPT | `remote-setup`, poi approvi ogni app con la passphrase |
+| `token` (default senza `--public-url`) | Claude Code, Codex, script, bot | Header `Authorization: Bearer <token>` |
+
+- 🔒 **OAuth 2.1 self-hosted**: PKCE S256, registrazione dinamica dei client e Client ID Metadata Document (solo da `claude.ai` e `chatgpt.com`, estendibile con `CLASSEVIVA_OAUTH_CIMD_HOSTS`), access token di 1 ora, refresh token di 30 giorni ruotati a ogni uso (il riuso di uno vecchio revoca l'accesso). Su disco solo hash SHA-256 dei token e hash scrypt della passphrase; troppe passphrase errate bloccano il consenso fino a 15 minuti.
+- 🔒 **Protezione DNS rebinding** sempre attiva: sono accettati solo `localhost` e l'host di `--public-url`.
+- 🔒 Il server ascolta su `127.0.0.1`. `--host 0.0.0.0` è rifiutato senza `--allow-lan`, perché l'HTTP non è cifrato: usalo solo in Docker o su reti fidate.
+- ⚠️ È **single-tenant**: chi ottiene l'accesso legge **tutto** il tuo registro. Ogni studente installa il proprio server.
 
 ```bash
-# Loopback (solo questo PC), token generato e salvato automaticamente
-classeviva-mcp serve --transport streamable-http
+# Token fisso per client che supportano gli header (solo questo PC)
+classeviva-mcp serve --transport streamable-http --auth token --print-token
 
-# Con token esplicito
-classeviva-mcp serve --transport streamable-http --token-file ~/.classeviva-token
-
-# Su una VPS, con avviso che il traffico è in chiaro
-classeviva-mcp serve --transport streamable-http --host 0.0.0.0 --port 8765
+# OAuth per le app, dietro tunnel HTTPS
+classeviva-mcp serve --transport streamable-http --public-url https://<nome-pc>.<tailnet>.ts.net
 ```
 
-Il token si risolve in quest'ordine: `--token-file` → variabile `CLASSEVIVA_MCP_TOKEN` → token generato e salvato (cifrato con DPAPI su Windows, `0600` su Linux/macOS) in `mcp_token.json` nella cartella dati. Con `--print-token` lo stampi a schermo.
+Il token bearer si risolve in quest'ordine: `--token-file` → variabile `CLASSEVIVA_MCP_TOKEN` → token salvato da un avvio precedente → token nuovo, generato e salvato (DPAPI su Windows, `0600` su Linux/macOS) in `mcp_token.json`. Con `--print-token` lo stampi a schermo.
 
 ---
 
 ## Sicurezza e privacy
 
-> **Importante:** questa sezione descrive il comportamento della v1.4.0; non rappresenta una certificazione di sicurezza. Non esporre il server a gruppi, utenti non fidati o Internet. Dettagli completi in [SECURITY.md](SECURITY.md) e [PRIVACY.md](PRIVACY.md).
+> **Importante:** questa sezione descrive il comportamento della v1.5.0; non rappresenta una certificazione di sicurezza. Non esporre il server a gruppi o utenti non fidati; su Internet solo con OAuth dietro un tunnel HTTPS (vedi «Uso da Smartphone»). Dettagli completi in [SECURITY.md](SECURITY.md) e [PRIVACY.md](PRIVACY.md).
 
 - **`CLASSEVIVA_READ_ONLY_MODE` (alias `CLASSEVIVA_PUBLIC_MODE`) minimizza i dati e disabilita le scritture.** In questa modalità i tool personali e di scrittura (`get_grades`, `get_absences`, `get_homework`, `get_agenda`, `get_lessons`, `calculate_grade_target`, `update_student_context`, `save_class_timetable`, `list_didactics`, `download_didactics_item`, `get_calendar`, `get_notes`, `get_documents`, `get_schoolbooks`) non vengono registrati e le funzioni sollevano `PermissionError`. `get_today_context` restituisce un profilo senza nome, cognome e identificativi, e un contesto senza numero di registro, note o ID delle circolari viste. Resta comunque una modalità per singolo account, **non** un sistema multiutente: il server non autentica i chiamanti.
 - **Il feed Classroom è protetto contro SSRF.** Sono ammessi solo host `calendar.google.com` e `classroom.google.com`, schema HTTPS, porta 443 e risoluzione verso IP pubblici. I redirect vengono seguiti manualmente e rivalidati (massimo 3) e la risposta è limitata a 5 MB. Come per Spaggiari, dalla v1.3.0 viene usato il proxy di sistema (necessario sulle reti scolastiche; disattivabile con `CLASSEVIVA_PROXY=off`) e la verifica TLS usa i certificati del sistema operativo; la verifica non viene mai disattivata. Il link si configura solo via CLI (`classeviva-mcp set-classroom-url`) e non viene mai restituito dai tool.

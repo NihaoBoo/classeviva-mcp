@@ -447,39 +447,117 @@ def _cmd_logout(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_serve(args: argparse.Namespace) -> None:
+def _cmd_serve(args: argparse.Namespace) -> int:
     """Starts the MCP server on the requested transport."""
     if args.transport == "stdio":
         mcp.run()
-        return
+        return 0
 
-    from classeviva_mcp.http_server import is_loopback, resolve_token, run_http_server
+    from classeviva_mcp.http_server import is_loopback, normalize_public_url, resolve_token, run_http_server
 
     store = CredentialStore()
-    token, source = resolve_token(args.token_file or None, store.data_dir)
+    if not is_loopback(args.host) and not args.allow_lan:
+        print(
+            "Errore: --host diverso da 127.0.0.1 espone HTTP non cifrato sulla rete.\n"
+            "Pubblica il server con un tunnel HTTPS (Tailscale Funnel, Cloudflare Tunnel) lasciando\n"
+            "--host 127.0.0.1, oppure aggiungi --allow-lan se sai cosa stai facendo (es. Docker).",
+            file=sys.stderr,
+        )
+        return 2
 
+    public_url: str | None = None
+    if args.public_url:
+        try:
+            public_url = normalize_public_url(args.public_url)
+        except ValueError as exc:
+            print(f"Errore: {exc}", file=sys.stderr)
+            return 2
+
+    auth_mode = args.auth or ("oauth" if public_url else "token")
+    if auth_mode == "oauth":
+        from classeviva_mcp.oauth import LocalOAuthProvider
+
+        if not public_url:
+            print("Errore: --auth oauth richiede --public-url (l'indirizzo HTTPS del tunnel).", file=sys.stderr)
+            return 2
+        provider = LocalOAuthProvider(
+            read_state=store.load_oauth_state,
+            write_state=store.save_oauth_state,
+            public_url=public_url,
+            resource_url=f"{public_url}{args.mcp_path}",
+        )
+        if not provider.has_owner():
+            print("Errore: esegui prima `classeviva-mcp remote-setup` per creare la passphrase.", file=sys.stderr)
+            return 2
+        run_http_server(
+            mcp,
+            host=args.host,
+            port=args.port,
+            path=args.mcp_path,
+            public_url=public_url,
+            oauth_provider=provider,
+        )
+        return 0
+
+    token, source = resolve_token(args.token_file or None, store.data_dir, store.load_mcp_token())
     if source == "generato automaticamente":
         store.save_mcp_token(token)
         print(f"Token generato e salvato in: {store.mcp_token_file}", file=sys.stderr)
-
     if args.print_token:
         print(token, flush=True)
+    run_http_server(mcp, host=args.host, port=args.port, token=token, path=args.mcp_path, public_url=public_url)
+    return 0
 
-    if not is_loopback(args.host):
-        print(
-            "ATTENZIONE: ascolto su un indirizzo raggiungibile dalla rete.\n"
-            "Il traffico HTTP non e' cifrato: il token viaggia in chiaro.\n"
-            "Usalo solo su rete privata fidata o dietro un tunnel (Tailscale, SSH).",
-            file=sys.stderr,
-        )
 
-    run_http_server(
-        mcp,
-        host=args.host,
-        port=args.port,
-        token=token,
-        path=args.mcp_path,
-    )
+def _cmd_remote_setup(args: argparse.Namespace) -> int:
+    """Creates (or rotates) the owner passphrase used to approve remote connectors."""
+    from classeviva_mcp.oauth import generate_passphrase, set_owner_passphrase
+
+    store = CredentialStore()
+    try:
+        existing = bool(store.load_oauth_state().get("owner"))
+    except Exception:  # noqa: BLE001 - unreadable state is replaced
+        existing = False
+    if existing and not args.rotate:
+        print("Accesso remoto già configurato. Usa `remote-setup --rotate` per una nuova passphrase")
+        print("(scollega anche tutte le app già collegate).")
+        return 0
+    passphrase = generate_passphrase()
+    set_owner_passphrase(store.load_oauth_state, store.save_oauth_state, passphrase)
+    port = args.port
+    print()
+    print("=" * 64)
+    print("  ACCESSO REMOTO (OAuth) CONFIGURATO")
+    print("=" * 64)
+    print()
+    print("  Passphrase del proprietario (mostrata UNA sola volta, salvala")
+    print("  nel tuo gestore di password; serve per approvare ogni app):")
+    print()
+    print(f"      {passphrase}")
+    print()
+    print("  1. Pubblica il server in HTTPS con un tunnel gratuito, ad esempio:")
+    print(f"       tailscale funnel --bg {port}")
+    print("     (oppure un Cloudflare Tunnel con il tuo dominio).")
+    print("  2. Avvia il server con l'URL HTTPS del tunnel:")
+    print(f"       classeviva-mcp serve --transport streamable-http --port {port} \\")
+    print("         --public-url https://<nome-pc>.<tailnet>.ts.net")
+    print("  3. Nell'app (Claude: Impostazioni > Connettori > Aggiungi connettore")
+    print("     personalizzato; ChatGPT: Connettori in modalità sviluppatore)")
+    print("     incolla l'URL  https://<...>/mcp  e approva con la passphrase.")
+    print()
+    print("  Revoca tutte le app collegate: classeviva-mcp remote-revoke")
+    print()
+    return 0
+
+
+def _cmd_remote_revoke(args: argparse.Namespace) -> int:
+    from classeviva_mcp.oauth import revoke_all
+
+    store = CredentialStore()
+    count = revoke_all(store.load_oauth_state, store.save_oauth_state)
+    store.mcp_token_file.unlink(missing_ok=True)
+    print(f"Revocate {count} sessioni OAuth e il token bearer salvato. Le app dovranno ricollegarsi.")
+    return 0
 
 
 def main() -> None:
@@ -580,6 +658,30 @@ def main() -> None:
         action="store_true",
         help="Stampa il token bearer usato per streamable-http",
     )
+    serve.add_argument(
+        "--public-url",
+        default="",
+        help="Indirizzo HTTPS pubblico del tunnel (es. https://pc.tail1234.ts.net); attiva OAuth",
+    )
+    serve.add_argument(
+        "--auth",
+        choices=("oauth", "token"),
+        default=None,
+        help="oauth (default con --public-url: app Claude/ChatGPT) oppure token (header Bearer)",
+    )
+    serve.add_argument(
+        "--allow-lan",
+        action="store_true",
+        help="Consenti --host diverso da 127.0.0.1 (HTTP non cifrato: solo reti fidate o Docker)",
+    )
+
+    remote_setup = sub.add_parser(
+        "remote-setup", help="Configura l'accesso remoto OAuth (app mobile) e mostra la passphrase"
+    )
+    remote_setup.add_argument("--rotate", action="store_true", help="Genera una nuova passphrase e scollega tutto")
+    remote_setup.add_argument("--port", type=int, default=8765, help="Porta usata negli esempi (default 8765)")
+
+    sub.add_parser("remote-revoke", help="Scollega tutte le app remote (OAuth e token bearer)")
 
     args = parser.parse_args()
 
@@ -602,7 +704,11 @@ def main() -> None:
     elif args.command == "logout":
         sys.exit(_cmd_logout(args))
     elif args.command == "serve":
-        _cmd_serve(args)
+        sys.exit(_cmd_serve(args))
+    elif args.command == "remote-setup":
+        sys.exit(_cmd_remote_setup(args))
+    elif args.command == "remote-revoke":
+        sys.exit(_cmd_remote_revoke(args))
     else:
         mcp.run()
 
