@@ -9,8 +9,10 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -209,6 +211,8 @@ async def test_get_snapshot_enrichment_and_privacy(
     """
     store = CredentialStore(fallback_dir=tmp_path, allow_insecure_plaintext=True)
     monkeypatch.setattr(server, "READ_ONLY_MODE", False)
+    # The fixture holidays are fixed dates: freeze "today" before them.
+    monkeypatch.setattr(server, "now_rome", lambda: datetime(2026, 11, 9, 8, 0, tzinfo=ZoneInfo("Europe/Rome")))
     client = _rich_fake_client()
     server.set_client_for_testing(client, store)
 

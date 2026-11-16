@@ -65,7 +65,8 @@ else:
         "Best practice per l'uso di classeviva-mcp:\n"
         "1. Chiama sempre `get_today_context()` all'inizio della sessione per leggere data/ora corrente in Italia, "
         "l'elenco reale delle materie/professori e il contesto studente (`student_context`: sigla classe es. '5AI', "
-        "indirizzo, convenzioni delle sigle dell'istituto in `custom_notes`, e orario salvato).\n"
+        "indirizzo, convenzioni delle sigle dell'istituto in `custom_notes`) con le lezioni di oggi e del prossimo "
+        "giorno di scuola; l'orario settimanale completo solo se serve, con `include_timetable=True`.\n"
         "2. Sei TU (l'AI) a interpretare il significato delle sigle della scuola dello studente (es. '5AI' = 5A Informatica, "
         "'5AC' = Chimica, '5AM' = Meccanica, '5AL' = Logistica). Quando apri una circolare o un tabellone orario lungo "
         "con `read_notice_pdf`, passa in `filter_keyword` i termini separati da virgola adatti a quella scuola "
@@ -202,6 +203,9 @@ _DAY_ALIASES = {
     "sab": "Sabato",
     "saturday": "Sabato",
 }
+# Timetable keys indexed by date.weekday() (Sunday has no lessons).
+_SCHEDULE_DAYS = ("Lunedi", "Martedi", "Mercoledi", "Giovedi", "Venerdi", "Sabato")
+_WEEKDAY_IT = ("Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica")
 _CLASS_CODE_RE = re.compile(r"^\d{1,2}[A-Z]{1,3}$")
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
@@ -283,33 +287,89 @@ def _profile_out(profile: Any) -> dict[str, Any]:
     ).model_dump()
 
 
-def _context_out(ctx: Any) -> dict[str, Any]:
+def _ordered_timetable(timetable: Any) -> dict[str, Any]:
+    """Full timetable with days in week order (storage order is not guaranteed)."""
+    data = timetable.model_dump()
+    schedule = data.get("schedule") or {}
+    order = {day: i for i, day in enumerate(_SCHEDULE_DAYS)}
+    data["schedule"] = {day: schedule[day] for day in sorted(schedule, key=lambda d: order.get(d, 99))}
+    return data
+
+
+def _timetable_summary(timetable: Any) -> dict[str, Any]:
+    if timetable is None or not timetable.schedule:
+        return {"saved": False}
+    return {
+        "saved": True,
+        "school_class": timetable.school_class,
+        "valid_from": timetable.valid_from,
+        "days": [day for day in _SCHEDULE_DAYS if day in timetable.schedule],
+        "hint": "Orario completo: get_today_context(include_timetable=True).",
+    }
+
+
+def _lessons_on(timetable: Any, day: date) -> dict[str, Any]:
+    """Lessons of the saved timetable on ``day`` (holidays are not considered)."""
+    key = _SCHEDULE_DAYS[day.weekday()] if day.weekday() < len(_SCHEDULE_DAYS) else ""
+    slots = (timetable.schedule.get(key) or []) if key else []
+    return {
+        "date": day.isoformat(),
+        "weekday": _WEEKDAY_IT[day.weekday()],
+        "lessons": [
+            {k: v for k, v in slot.model_dump().items() if v not in ("", None)}
+            for slot in sorted(slots, key=lambda slot: slot.hour)
+        ],
+    }
+
+
+def _next_school_day(timetable: Any, today: date) -> date | None:
+    for offset in range(1, 8):
+        candidate = today + timedelta(days=offset)
+        weekday = candidate.weekday()
+        if weekday < len(_SCHEDULE_DAYS) and timetable.schedule.get(_SCHEDULE_DAYS[weekday]):
+            return candidate
+    return None
+
+
+def _context_out(ctx: Any, *, full_timetable: bool = True) -> dict[str, Any]:
+    """Student context for the agent.
+
+    Internal bookkeeping (``seen_notice_ids``) is never returned. With
+    ``full_timetable=False`` the weekly timetable is replaced by a short summary.
+    """
     configured = _store.has_classroom_ical_url()
     if READ_ONLY_MODE:
-        return PublicStudentContextOut(
+        out = PublicStudentContextOut(
             school_class=ctx.school_class,
             course_name=ctx.course_name,
             school_year=ctx.school_year,
             classroom_ical_configured=configured,
-            timetable=ctx.timetable,
         ).model_dump()
-    return StudentContextOut(
-        school_class=ctx.school_class,
-        course_name=ctx.course_name,
-        register_number=ctx.register_number,
-        custom_notes=ctx.custom_notes,
-        school_year=ctx.school_year,
-        classroom_ical_configured=configured,
-        timetable=ctx.timetable,
-        seen_notice_ids=ctx.seen_notice_ids,
-        updated_at=ctx.updated_at,
-    ).model_dump()
+    else:
+        out = StudentContextOut(
+            school_class=ctx.school_class,
+            course_name=ctx.course_name,
+            register_number=ctx.register_number,
+            custom_notes=ctx.custom_notes,
+            school_year=ctx.school_year,
+            classroom_ical_configured=configured,
+            updated_at=ctx.updated_at,
+        ).model_dump()
+    if full_timetable:
+        out["timetable"] = _ordered_timetable(ctx.timetable) if ctx.timetable else None
+    else:
+        out["timetable_summary"] = _timetable_summary(ctx.timetable)
+    return out
 
 
 @mcp.tool()
-async def get_today_context() -> dict[str, Any]:
+async def get_today_context(include_timetable: bool = False) -> dict[str, Any]:
     """Restituisce la data/ora corrente in Italia (Europe/Rome), l'anno scolastico corrente, il profilo scuola,
-    l'elenco materie/professori e il contesto persistente salvato in locale (classe es. '5AI', indirizzo, orario).
+    l'elenco materie/professori e il contesto persistente salvato in locale (classe es. '5AI', indirizzo).
+    Se è salvato un orario, `lessons_today` e `lessons_next_school_day` riportano le lezioni di oggi e del
+    prossimo giorno con lezioni, prese dall'orario salvato: festività e sostituzioni non sono considerate
+    (per quelle usa `get_calendar` e `get_lessons`). L'orario settimanale completo si ottiene con
+    `include_timetable=True`.
     Verifica inoltre in automatico se è cambiato l'anno scolastico o la classe sul registro elettronico (es. passaggio da 3AI a 4AI).
     In modalità read-only il profilo è minimizzato e non contiene dati anagrafici né segreti.
     """
@@ -363,9 +423,13 @@ async def get_today_context() -> dict[str, Any]:
                 "Chiedi allo studente se è passato alla nuova classe e aggiorna con `update_student_context`."
             )
 
+    timetable = student_ctx.timetable if student_ctx.timetable and student_ctx.timetable.schedule else None
+    today_date = now.date()
+    next_day = _next_school_day(timetable, today_date) if timetable else None
+
     return {
         "today": now.strftime("%Y-%m-%d"),
-        "weekday": now.strftime("%A"),
+        "weekday": _WEEKDAY_IT[today_date.weekday()],
         "current_time_rome": now.strftime("%H:%M"),
         "school_year": current_sy,
         "school_year_status": {
@@ -380,7 +444,9 @@ async def get_today_context() -> dict[str, Any]:
         "read_only_mode": READ_ONLY_MODE,
         "public_mode_active": READ_ONLY_MODE,  # backward-compatible field
         "profile": _profile_out(profile),
-        "student_context": _context_out(student_ctx),
+        "student_context": _context_out(student_ctx, full_timetable=include_timetable),
+        "lessons_today": _lessons_on(timetable, today_date) if timetable else None,
+        "lessons_next_school_day": _lessons_on(timetable, next_day) if next_day else None,
         "subjects_and_teachers": subjects_list,
         "warnings": warnings,
     }
@@ -422,7 +488,7 @@ async def update_student_context(
     saved = _store.save_student_context(ctx)
     return {
         "status": "saved",
-        "student_context": _context_out(saved),
+        "student_context": _context_out(saved, full_timetable=False),
     }
 
 
@@ -1203,7 +1269,7 @@ async def get_snapshot(days_ahead: int = 7) -> dict[str, Any]:
     end = (now_rome() + timedelta(days=days)).strftime("%Y-%m-%d")
 
     context, grades, absences, homework, agenda, calendar, didactics = await asyncio.gather(
-        get_today_context(),
+        get_today_context(include_timetable=True),
         get_grades(),
         get_absences(),
         get_homework(days_ahead=days),
