@@ -4,6 +4,27 @@ Tutte le modifiche rilevanti sono documentate in questo file.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e il
 progetto adotta [Semantic Versioning](https://semver.org/lang/it/).
 
+## [Unreleased]
+
+### Changed
+
+- **`get_today_context` più compatto**: invece dell'intero orario settimanale restituisce
+  `lessons_today` e `lessons_next_school_day` (dall'orario salvato) e un breve
+  `student_context.timetable_summary`. L'orario completo, con i giorni in ordine di
+  settimana, si chiede con `include_timetable=True`; `get_snapshot` continua a includerlo.
+- `weekday` è ora in italiano (es. `Martedì`).
+
+### Removed
+
+- `student_context.seen_notice_ids` non viene più restituito all'agente: è uno stato
+  interno del server e occupava solo token.
+
+### Fixed
+
+- `remote-setup`: la validazione della passphrase usa di nuovo un solo controllo e il
+  minimo di caratteri mostrato deriva dalla costante, invece di un valore scritto a mano.
+- Test dello snapshot che dipendeva dalla data corrente (falliva dopo il 10/11/2026).
+
 ## [1.5.0] - 2026-11-10
 
 ### Added
