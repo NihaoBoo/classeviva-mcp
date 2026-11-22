@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import secrets
 import shutil
 import stat
 import sys
@@ -13,11 +14,13 @@ from pathlib import Path
 from typing import Any
 
 import keyring
-from keyring.errors import KeyringError
+from keyring.errors import NoKeyringError
 
 from classeviva_mcp.models import StudentContext, current_school_year_str, today_rome_str
 
 SERVICE_NAME = "classeviva-mcp"
+_ACCOUNT_KEY = "spaggiari_account"
+_LEGACY_ACCOUNT_KEYS = ("username", "password", "preferred_profile")
 MAX_SEEN_NOTICES = 200
 MAX_CUSTOM_NOTES_CHARS = 1500
 DPAPI_MAGIC = b"DPAPI1\n"
@@ -151,6 +154,10 @@ class CredentialStore:
         self.session_file = self.data_dir / "session_cache.json"
         self.context_file = self.data_dir / "student_context.json"
         self.attachments_dir = self.data_dir / "attachments"
+        self.didactics_dir = self.data_dir / "didactics"
+        self.auth_generation_file = self.data_dir / "auth_generation"
+        self.classroom_generation_file = self.data_dir / "classroom_generation"
+        self.classroom_grant_file = self.data_dir / "classroom_oauth.json"
         self.mcp_token_file = self.data_dir / "mcp_token.json"
         self.oauth_state_file = self.data_dir / "oauth_state.json"
 
@@ -198,39 +205,32 @@ class CredentialStore:
         """Saves credentials into the OS Keyring or an encrypted fallback.
         Returns the backend used ('keyring', 'dpapi' or 'file').
         """
-        user_clean = username.strip()
-        ical_clean = classroom_ical_url.strip()
-        prof_clean = preferred_profile.strip()
-        gtok_clean = google_access_token.strip()
-
+        account = {"username": username.strip(), "password": password, "preferred_profile": preferred_profile.strip()}
+        previous = self._read_private_json(self.fallback_file) if self.fallback_file.exists() else {}
+        legacy_google = {key: previous[key] for key in ("classroom_ical_url", "google_access_token") if previous.get(key)}
+        if classroom_ical_url.strip():
+            legacy_google["classroom_ical_url"] = classroom_ical_url.strip()
+        if google_access_token.strip():
+            legacy_google["google_access_token"] = google_access_token.strip()
+        serialized = json.dumps(account)
         try:
-            keyring.set_password(SERVICE_NAME, "username", user_clean)
-            keyring.set_password(SERVICE_NAME, "password", password)
-            if ical_clean:
-                keyring.set_password(SERVICE_NAME, "classroom_ical_url", ical_clean)
-            if prof_clean:
-                keyring.set_password(SERVICE_NAME, "preferred_profile", prof_clean)
-            if gtok_clean:
-                keyring.set_password(SERVICE_NAME, "google_access_token", gtok_clean)
-            if keyring.get_password(SERVICE_NAME, "username") == user_clean:
-                self.fallback_file.unlink(missing_ok=True)
-                return "keyring"
-        except (KeyringError, Exception):
-            pass
+            keyring.set_password(SERVICE_NAME, _ACCOUNT_KEY, serialized)
+            in_keyring = keyring.get_password(SERVICE_NAME, _ACCOUNT_KEY) == serialized
+        except Exception:
+            in_keyring = False
 
-        payload = {
-            "username": user_clean,
-            "password": password,
-            "classroom_ical_url": ical_clean,
-            "preferred_profile": prof_clean,
-            "google_access_token": gtok_clean,
-        }
-        if self._dpapi:
-            self._write_private_json(self.fallback_file, payload)
-            return "dpapi"
-        if self.allow_insecure_plaintext:
-            self._write_private_json(self.fallback_file, payload)
-            return "file"
+        if in_keyring:
+            for key, value in legacy_google.items():
+                keyring.set_password(SERVICE_NAME, key, value)
+            self.fallback_file.unlink(missing_ok=True)
+            self._invalidate_session()
+            if self._clear_keyring(_LEGACY_ACCOUNT_KEYS):
+                raise RuntimeError("Aggiornamento incompleto: rimuovi le credenziali legacy con `logout`.")
+            return "keyring"
+        if self._dpapi or self.allow_insecure_plaintext:
+            self._write_private_json(self.fallback_file, {**account, **legacy_google})
+            self._invalidate_session()
+            return "dpapi" if self._dpapi else "file"
         raise RuntimeError(
             "Keyring non disponibile e DPAPI non applicabile su questa piattaforma. "
             "Rifiuto di salvare credenziali in chiaro. Usa CLASSEVIVA_USER/CLASSEVIVA_PASSWORD "
@@ -246,6 +246,7 @@ class CredentialStore:
                 data = self._read_private_json(self.fallback_file)
                 data["classroom_ical_url"] = clean
                 self._write_private_json(self.fallback_file, data)
+            self._bump_generation(self.classroom_generation_file)
             return
         except Exception:
             pass
@@ -254,6 +255,7 @@ class CredentialStore:
             data = self._read_private_json(self.fallback_file) if self.fallback_file.exists() else {}
             data["classroom_ical_url"] = clean
             self._write_private_json(self.fallback_file, data)
+            self._bump_generation(self.classroom_generation_file)
             return
         raise RuntimeError(
             "Impossibile salvare l'URL iCal: Keyring non disponibile e fallback cifrato non applicabile."
@@ -274,6 +276,24 @@ class CredentialStore:
                 return False
         return False
 
+    def load_classroom_sources(self) -> tuple[str, str]:
+        """Read legacy Google sources independently from the Spaggiari account."""
+        ical = os.getenv("CLASSROOM_ICAL_URL", "").strip()
+        token = os.getenv("GOOGLE_ACCESS_TOKEN", "").strip()
+        try:
+            ical = ical or keyring.get_password(SERVICE_NAME, "classroom_ical_url") or ""
+            token = token or keyring.get_password(SERVICE_NAME, "google_access_token") or ""
+        except NoKeyringError:
+            pass
+        except Exception:
+            if not self.fallback_file.exists():
+                raise
+        if self.fallback_file.exists() and not (ical and token):
+            data = self._read_private_json(self.fallback_file)
+            ical = ical or str(data.get("classroom_ical_url") or "")
+            token = token or str(data.get("google_access_token") or "")
+        return ical, token
+
     def load(self) -> StoredCredentials:
         """Loads credentials following priority: env -> keyring -> fallback file."""
         env_user = os.getenv("CLASSEVIVA_USER", "").strip()
@@ -292,44 +312,124 @@ class CredentialStore:
                 source="env",
             )
 
-        try:
-            kr_user = keyring.get_password(SERVICE_NAME, "username") or ""
-            kr_pass = keyring.get_password(SERVICE_NAME, "password") or ""
-            kr_ical = env_ical or (keyring.get_password(SERVICE_NAME, "classroom_ical_url") or "")
-            kr_gtok = env_gtok or (keyring.get_password(SERVICE_NAME, "google_access_token") or "")
-            kr_prof = env_prof or (keyring.get_password(SERVICE_NAME, "preferred_profile") or "")
-            if kr_user and kr_pass:
-                return StoredCredentials(
-                    username=kr_user,
-                    password=kr_pass,
-                    classroom_ical_url=kr_ical,
-                    google_access_token=kr_gtok,
-                    preferred_profile=kr_prof,
-                    source="keyring",
-                )
-        except (KeyringError, Exception):
-            pass
-
+        account: dict[str, Any] = {}
+        source = "keyring"
         if self.fallback_file.exists():
             try:
                 data = self._read_private_json(self.fallback_file)
                 if data.get("username") and data.get("password"):
-                    return StoredCredentials(
-                        username=data["username"],
-                        password=data["password"],
-                        classroom_ical_url=env_ical or data.get("classroom_ical_url", ""),
-                        google_access_token=env_gtok or data.get("google_access_token", ""),
-                        preferred_profile=env_prof or data.get("preferred_profile", ""),
-                        source="dpapi" if self._dpapi else "file",
-                    )
+                    account = data
+                    source = "dpapi" if self._dpapi else "file"
             except Exception:
                 pass
 
+        if not account:
+            try:
+                raw = keyring.get_password(SERVICE_NAME, _ACCOUNT_KEY)
+                account = json.loads(raw) if raw else {
+                    key: keyring.get_password(SERVICE_NAME, key) for key in _LEGACY_ACCOUNT_KEYS
+                }
+            except Exception:
+                account = {}
+        if isinstance(account, dict) and account.get("username") and account.get("password"):
+            try:
+                env_ical, env_gtok = self.load_classroom_sources()
+            except Exception:
+                pass  # Google sources must not prevent a Spaggiari login.
+            return StoredCredentials(
+                username=account["username"], password=account["password"],
+                classroom_ical_url=env_ical, google_access_token=env_gtok,
+                preferred_profile=env_prof or account.get("preferred_profile") or "", source=source,
+            )
         raise RuntimeError(
             "Credenziali ClasseViva non configurate. "
             "Esegui `classeviva-mcp login` nel terminale per salvarle nel gestore credenziali di sistema, "
             "oppure imposta CLASSEVIVA_USER e CLASSEVIVA_PASSWORD."
         )
+
+    def auth_generation(self) -> str:
+        return self._generation(self.auth_generation_file)
+
+    def classroom_generation(self) -> str:
+        return self._generation(self.classroom_generation_file)
+
+    @staticmethod
+    def _generation(path: Path) -> str:
+        try:
+            return path.read_text(encoding="ascii")
+        except FileNotFoundError:
+            return ""
+
+    def _bump_generation(self, path: Path) -> None:
+        self._write_private_bytes(path, secrets.token_hex(16).encode("ascii"))
+
+    def _invalidate_session(self) -> None:
+        self._bump_generation(self.auth_generation_file)
+        self.session_file.unlink(missing_ok=True)
+
+    def save_classroom_grant(self, data: dict[str, Any]) -> None:
+        """Google grants never use the legacy plaintext opt-in."""
+        try:
+            serialized = json.dumps(data)
+            keyring.set_password(SERVICE_NAME, "classroom_oauth", serialized)
+            if keyring.get_password(SERVICE_NAME, "classroom_oauth") != serialized:
+                raise RuntimeError
+        except Exception:
+            if not self._dpapi:
+                raise RuntimeError("Archivio sicuro Google non disponibile.") from None
+            self._write_private_json(self.classroom_grant_file, data)
+        else:
+            self.classroom_grant_file.unlink(missing_ok=True)
+        self._bump_generation(self.classroom_generation_file)
+
+    def load_classroom_grant(self) -> dict[str, Any]:
+        if self.classroom_grant_file.exists():
+            if not self._dpapi or not self.classroom_grant_file.read_bytes().startswith(DPAPI_MAGIC):
+                raise RuntimeError("Archivio Google non cifrato.")
+            return self._read_private_json(self.classroom_grant_file)
+        try:
+            raw = keyring.get_password(SERVICE_NAME, "classroom_oauth")
+        except NoKeyringError:
+            return {}
+        return json.loads(raw) if raw else {}
+
+    def clear_classroom(self) -> None:
+        """Clear Google OAuth and legacy Classroom sources, leaving ClasseViva connected."""
+        errors = self._clear_keyring(("classroom_oauth", "classroom_ical_url", "google_access_token"))
+        self.classroom_grant_file.unlink(missing_ok=True)
+        if self.fallback_file.exists():
+            data = self._read_private_json(self.fallback_file)
+            data.pop("classroom_ical_url", None)
+            data.pop("google_access_token", None)
+            if data:
+                self._write_private_json(self.fallback_file, data)
+            else:
+                self.fallback_file.unlink()
+        self._clear_legacy_context_url()
+        self._bump_generation(self.classroom_generation_file)
+        if errors:
+            raise RuntimeError("Rimozione delle credenziali Google dal Keyring non riuscita.")
+
+    def _clear_legacy_context_url(self) -> None:
+        if self.context_file.exists():
+            data = self._read_private_json(self.context_file)
+            if "classroom_ical_url" in data:
+                del data["classroom_ical_url"]
+                self._write_private_json(self.context_file, data)
+
+    @staticmethod
+    def _clear_keyring(keys: tuple[str, ...]) -> list[str]:
+        errors = []
+        for key in keys:
+            try:
+                if keyring.get_password(SERVICE_NAME, key) is not None:
+                    keyring.delete_password(SERVICE_NAME, key)
+            except NoKeyringError:
+                # A machine using only DPAPI or the legacy file needs no Keyring.
+                continue
+            except Exception:
+                errors.append(key)
+        return errors
 
     def clear(self, purge_all: bool = False) -> None:
         """Removes stored credentials and cached session tokens.
@@ -337,29 +437,53 @@ class CredentialStore:
         With ``purge_all=True`` also removes the student context and attachment cache.
         Raises RuntimeError if a Keyring entry could not be deleted.
         """
-        errors: list[str] = []
-        for key in (
-            "username",
-            "password",
+        errors = self._clear_keyring((
+            _ACCOUNT_KEY,
+            *_LEGACY_ACCOUNT_KEYS,
             "classroom_ical_url",
-            "preferred_profile",
             "google_access_token",
-        ):
-            try:
-                existing = keyring.get_password(SERVICE_NAME, key)
-                if existing is not None:
-                    keyring.delete_password(SERVICE_NAME, key)
-            except Exception as exc:
-                errors.append(f"{key}: {type(exc).__name__}")
-
-        self.fallback_file.unlink(missing_ok=True)
-        self.session_file.unlink(missing_ok=True)
+            "classroom_oauth",
+        ))
+        try:
+            self._invalidate_session()
+        except OSError:
+            errors.append("sessione")
+        try:
+            self._bump_generation(self.classroom_generation_file)
+        except OSError:
+            errors.append("sessione Google")
+        files = [self.fallback_file, self.session_file, self.classroom_grant_file, self.mcp_token_file]
         if purge_all:
-            self.context_file.unlink(missing_ok=True)
-            shutil.rmtree(self.attachments_dir, ignore_errors=True)
+            files.extend((self.context_file, self.oauth_state_file))
+        else:
+            try:
+                self._clear_legacy_context_url()
+            except (OSError, ValueError):
+                errors.append("iCal legacy")
+            if self.oauth_state_file.exists():
+                try:
+                    owner = self.load_oauth_state().get("owner")
+                    self.save_oauth_state({"owner": owner} if owner else {})
+                except (OSError, ValueError, AttributeError):
+                    errors.append("accesso remoto")
+        for path in files:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                errors.append(path.name)
+        for folder in (self.attachments_dir, self.didactics_dir) if purge_all else ():
+            try:
+                if folder.is_symlink():
+                    folder.unlink()
+                else:
+                    shutil.rmtree(folder)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                errors.append(folder.name)
         if errors:
             raise RuntimeError(
-                "Alcune credenziali non sono state rimosse dal Keyring: " + ", ".join(errors)
+                "Rimozione locale incompleta: " + ", ".join(errors)
             )
 
     # --- MCP HTTP token ---

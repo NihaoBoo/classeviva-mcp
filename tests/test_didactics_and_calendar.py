@@ -238,7 +238,7 @@ async def test_didactics_listing_and_download(
 
     async with http_client:
         # 1. Filter by subject: Matematica
-        res_math = await server.list_didactics(subject="Matematica")
+        res_math = await server.list_didactics(subject="Matematica", view="folders")
         assert res_math["folders_count"] == 2
         assert res_math["files_count"] == 2
         folder_names = [f["folder_name"] for f in res_math["folders"]]
@@ -246,25 +246,25 @@ async def test_didactics_listing_and_download(
         assert "Matematica - Esercizi" in folder_names
 
         # 2. Filter by teacher: Bianchi
-        res_teacher = await server.list_didactics(teacher="Bianchi")
+        res_teacher = await server.list_didactics(teacher="Bianchi", view="folders")
         assert res_teacher["folders_count"] == 1
         assert res_teacher["files_count"] == 1
         assert res_teacher["folders"][0]["teacher_name"] == "Prof. Bianchi"
 
         # 3. Filter with no match
-        res_empty = await server.list_didactics(subject="Chimica")
+        res_empty = await server.list_didactics(subject="Chimica", view="folders")
         assert res_empty["folders_count"] == 0
         assert res_empty["files_count"] == 0
         assert "materia 'Chimica'" in res_empty["summary"]
 
         # 4. List all
-        res_all = await server.list_didactics()
+        res_all = await server.list_didactics(view="folders")
         assert res_all["folders_count"] == 3
         assert res_all["files_count"] == 3
         assert "3 cartelle e 3 file" in res_all["summary"]
 
         # 5. Download PDF item
-        dl_pdf = await server.download_didactics_item(file_id=501)
+        dl_pdf = await server.download_didactics_item(file_id=501, include_text=True)
         assert dl_pdf["file_id"] == 501
         assert dl_pdf["file_name"] == "Calcolo_Integrale.pdf"
         assert pdf_content in dl_pdf["text"]
@@ -272,7 +272,7 @@ async def test_didactics_listing_and_download(
         assert not dl_pdf["is_text_truncated"]
 
         # 6. Download DOCX item
-        dl_docx = await server.download_didactics_item(file_id=502)
+        dl_docx = await server.download_didactics_item(file_id=502, include_text=True)
         assert dl_docx["file_id"] == 502
         assert dl_docx["file_name"] == "Relazione_Lab.docx"
         assert docx_content in dl_docx["text"]
@@ -816,7 +816,7 @@ async def test_read_notice_pdf_404_read_only_mode_no_post(
         # Because notice is unread and read-only mode is active, execution skips before remote modification
         assert res["notice_marked_as_read"] is False
         assert res["attachments_count"] == 0
-        assert "In modalità read-only questa operazione non è consentita" in res["text"]
+        assert "sola lettura" in res["text"]
         # CRITICAL SECURITY ASSERTION: No POST requests were made!
         assert len(post_read_calls) == 0
 
@@ -934,7 +934,7 @@ async def test_snapshot_enriched_without_notes(
     assert "didactics" in snapshot
     assert snapshot["didactics"]["folders_count"] == 1
     assert snapshot["didactics"]["files_count"] == 1
-    assert snapshot["didactics"]["new_didactics_count"] == 1
+    assert snapshot["didactics"]["files_count"] == 1
 
     # 2. Assert zero tolerance for disciplinary notes in top-level keys
     assert "notes" not in snapshot, "CRITICAL: 'notes' key leaked into snapshot root!"

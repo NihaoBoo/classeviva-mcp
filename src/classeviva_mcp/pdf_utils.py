@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import io
-import os
 import re
 import xml.etree.ElementTree as ET
 import zipfile
@@ -10,6 +9,9 @@ from typing import Any
 
 import openpyxl
 import pymupdf
+
+from classeviva_mcp.attachments import render_pdf_page, safe_filename
+from classeviva_mcp.credentials import CredentialStore
 
 ROMAN_BY_DIGIT = {
     "1": "I",
@@ -196,12 +198,15 @@ def render_scanned_pdf_pages(
     safe_id = "".join(c for c in str(notice_id) if c.isalnum() or c in ("-", "_"))
     saved_images: list[str] = []
 
-    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc:
-        for idx in range(min(len(doc), max_pages)):
-            pix = doc[idx].get_pixmap(dpi=dpi)
+    try:
+        with pymupdf.open(stream=pdf_bytes, filetype="pdf") as doc:
+            page_count = min(len(doc), max_pages, MAX_PDF_PAGES)
+        for idx in range(page_count):
             img_path = output_dir / f"circolare_{safe_id}_page_{idx + 1}.png"
-            pix.save(str(img_path))
+            _write_private_bytes(img_path, render_pdf_page(pdf_bytes, idx + 1, dpi=dpi))
             saved_images.append(str(img_path))
+    except (ValueError, RuntimeError):
+        pass
 
     _prune_attachments_dir(output_dir)
     return saved_images
@@ -404,13 +409,7 @@ def _prune_attachments_dir(output_dir: Path, max_files: int = 30) -> None:
 
 
 def _write_private_bytes(target: Path, raw_bytes: bytes) -> None:
-    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as handle:
-        handle.write(raw_bytes)
-    try:
-        os.chmod(target, 0o600)
-    except OSError:
-        pass
+    CredentialStore._write_private_bytes(target, raw_bytes)
 
 
 def save_attachment_file(
@@ -423,7 +422,7 @@ def save_attachment_file(
     output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     safe_id = "".join(c for c in str(notice_id) if c.isalnum() or c in ("-", "_"))
     if file_name:
-        clean_name = re.sub(r'[<>:"/\\|?*]', "_", file_name).strip()
+        clean_name = safe_filename(file_name, "allegato.bin")
         target = output_dir / f"{safe_id}_{clean_name}"
     else:
         ext = ".pdf" if raw_bytes.startswith(b"%PDF") else (".docx" if raw_bytes.startswith(b"PK") else ".bin")

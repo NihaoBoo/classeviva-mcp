@@ -124,6 +124,7 @@ class AgendaItem(BaseModel):
     title: str
     description: str = ""
     date: str = Field(description="Data dell'evento o scadenza in formato YYYY-MM-DD (Europe/Rome)")
+    time: str | None = Field(default=None, description="Ora locale della scadenza (HH:MM), se disponibile")
     author: str = ""
     url: str | None = None
 
@@ -239,5 +240,4 @@ class SchoolBook(BaseModel):
     price: float | None = Field(default=None, description="Prezzo di copertina in Euro")
     to_buy: bool = Field(default=True, description="True se il libro è da acquistare")
     is_recommended: bool = Field(default=False, description="True se il libro è solo consigliato")
-
 

@@ -10,16 +10,25 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+import httpx
+from mcp.server.mcpserver.exceptions import ResourceError
+from mcp.types import ResourceLink, TextContent
+
 try:
     from mcp.server.mcpserver import MCPServer
 except ImportError:  # pragma: no cover
     from mcp.server.fastmcp import FastMCP as MCPServer  # type: ignore[attr-defined,no-redef]
 
-from classeviva_mcp.classroom_ical import fetch_classroom_tasks
-from classeviva_mcp.client import SpaggiariClient
-from classeviva_mcp.credentials import CredentialStore, StoredCredentials
+from classeviva_mcp.attachments import MIME_TYPES, AttachmentHandoff, render_pdf_page, safe_filename
+from classeviva_mcp.classroom_auth import ClassroomAuthError, ClassroomTokens
+from classeviva_mcp.classroom_ical import ClassroomFetchResult, fetch_classroom_materials, fetch_classroom_tasks
+from classeviva_mcp.client import ClasseVivaError, SpaggiariClient, validate_file_id
+from classeviva_mcp.credentials import CredentialStore
 from classeviva_mcp.models import (
+    AgendaItem,
     ClassTimetable,
+    DidacticsFile,
+    DidacticsFolder,
     ProfileOut,
     PublicProfileOut,
     PublicStudentContextOut,
@@ -53,20 +62,17 @@ READ_ONLY_MODE = _env_flag("CLASSEVIVA_READ_ONLY_MODE") or _env_flag("CLASSEVIVA
 if READ_ONLY_MODE:
     AGENT_INSTRUCTIONS = (
         "Best practice per l'uso di classeviva-mcp in modalità READ-ONLY:\n"
-        "1. Chiama `get_today_context()` per leggere data/ora, anno scolastico, materie/professori e orario. "
+        "1. Per una domanda mirata usa solo il tool pertinente. Usa `get_today_context()` per data e orario. "
         "In questa modalità il profilo è minimizzato e non contiene dati anagrafici.\n"
-        "2. Usa `list_notices()` per elencare le circolari e `read_notice_pdf()` per leggere un allegato. "
-        "Su una circolare non ancora letta, il server non la contrassegna come letta e restituisce solo i metadati: "
-        "chiedi conferma all'utente prima di usare `allow_mark_as_read=True`.\n"
+        "2. Per le circolari non lette `read_notice_pdf()` restituisce solo metadati e non può segnarle come lette.\n"
         "3. Non tentare di modificare il contesto studente: i tool di scrittura e i dati personali sono disabilitati."
     )
 else:
     AGENT_INSTRUCTIONS = (
         "Best practice per l'uso di classeviva-mcp:\n"
-        "1. Chiama sempre `get_today_context()` all'inizio della sessione per leggere data/ora corrente in Italia, "
-        "l'elenco reale delle materie/professori e il contesto studente (`student_context`: sigla classe es. '5AI', "
-        "indirizzo, convenzioni delle sigle dell'istituto in `custom_notes`) con le lezioni di oggi e del prossimo "
-        "giorno di scuola; l'orario settimanale completo solo se serve, con `include_timetable=True`.\n"
+        "1. Per una domanda mirata usa solo il tool pertinente. Usa `get_today_context()` se servono orario, "
+        "materie o contesto studente; l'orario completo solo con `include_timetable=True`. "
+        "Per compiti di un giorno usa `get_homework(start_date=..., end_date=...)`.\n"
         "2. Sei TU (l'AI) a interpretare il significato delle sigle della scuola dello studente (es. '5AI' = 5A Informatica, "
         "'5AC' = Chimica, '5AM' = Meccanica, '5AL' = Logistica). Quando apri una circolare o un tabellone orario lungo "
         "con `read_notice_pdf`, passa in `filter_keyword` i termini separati da virgola adatti a quella scuola "
@@ -81,7 +87,7 @@ else:
         "5. Non inventare numeri: per le assenze da giustificare usa `unjustified_count` (0 = nessuna), "
         "non `total_events` che conta anche ritardi, uscite e assenze già giustificate. "
         "Se un tool restituisce `warnings`, riportali allo studente invece di ignorarli.\n"
-        "6. Per materiali e compiti dei docenti usa `list_didactics` e `download_didactics_item`. "
+        "6. Cerca file con `search_materials`; leggi, salva o prepara l'allegato solo su richiesta. "
         "Per festività e ponti usa `get_calendar`. Per documenti e pagelle usa `get_documents`. "
         "Per libri di testo usa `get_schoolbooks`. Le note disciplinari (`get_notes`) sono escluse dallo snapshot."
     )
@@ -90,6 +96,8 @@ mcp = MCPServer("classeviva-mcp", instructions=AGENT_INSTRUCTIONS)
 
 _store = CredentialStore()
 _client = SpaggiariClient(store=_store)
+_classroom_tokens = ClassroomTokens()
+_handoff = AttachmentHandoff()
 
 
 def set_client_for_testing(client: SpaggiariClient, store: CredentialStore | None = None) -> None:
@@ -578,64 +586,90 @@ async def save_class_timetable(
     }
 
 
-async def get_homework(days_ahead: int = 7) -> dict[str, Any]:
-    """Restituisce i compiti, le verifiche e le interrogazioni (ClasseViva + eventuale Google Classroom
-    OAuth2 / iCal `.ics`) da oggi fino a `days_ahead` giorni in avanti (max 60).
-    `items[].kind` distingue 'homework' (compito), 'exam' (verifica/interrogazione) e 'assignment' (Classroom).
-    Nota: il feed `.ics` di Google Classroom include solo i compiti dotati di data di scadenza;
-    avvisi sullo Stream o materiali senza scadenza non compaiono nel feed `.ics`.
-    Se una fonte (ClasseViva o Classroom) non risponde, il risultato resta parziale e `warnings` spiega cosa manca.
-    """
-    _ensure_writable()
-    days = max(1, min(60, days_ahead))
-    start = now_rome().strftime("%Y-%m-%d")
-    end = (now_rome() + timedelta(days=days)).strftime("%Y-%m-%d")
+async def _classeviva_agenda(start: str, end: str) -> tuple[list[AgendaItem], list[str]]:
+    try:
+        return await _client.get_agenda(start, end), []
+    except Exception as exc:
+        logger.warning("Agenda ClasseViva non disponibile: %s", type(exc).__name__)
+        return [], ["ClasseViva: agenda non disponibile; compiti e verifiche non sono stati verificati."]
 
-    cvv_items = await _client.get_agenda(start, end)
-    homework = [it.model_dump() for it in cvv_items if it.kind in ("homework", "exam")]
 
+async def _classroom_homework(start: str, end: str) -> ClassroomFetchResult:
+    generation = _store.classroom_generation()
     warnings: list[str] = []
     try:
-        creds: StoredCredentials | None = _store.load()
-    except Exception:  # noqa: BLE001 - no stored credentials: Classroom is simply not configured
-        creds = None
+        ical, legacy_token = _store.load_classroom_sources()
+    except Exception:
+        ical, legacy_token = "", ""
+        warnings.append("Google Classroom: configurazione iCal/token precedente non leggibile.")
     try:
-        if creds is not None and (creds.classroom_ical_url or creds.google_access_token):
-            classroom = await fetch_classroom_tasks(
-                ical_url=creds.classroom_ical_url,
-                google_access_token=creds.google_access_token,
-                start_date=start,
-                end_date=end,
-            )
-            homework.extend([it.model_dump() for it in classroom.items])
-            warnings.extend(classroom.warnings)
-    except Exception as exc:  # noqa: BLE001 - degraded mode, never leak secret URL/token
-        logger.warning("Classroom non disponibile: %s", type(exc).__name__)
-        warnings.append("Google Classroom non disponibile; risultati ClasseViva only.")
+        token = await _classroom_tokens.access_token(_store) or legacy_token
+    except ClassroomAuthError as exc:
+        token = ""
+        warnings.append(str(exc))
+    except Exception:
+        token = ""
+        warnings.append("Google Classroom: archivio delle autorizzazioni non leggibile.")
+    result = await fetch_classroom_tasks(
+        ical_url=ical, google_access_token=token, start_date=start, end_date=end,
+    ) if ical or token else ClassroomFetchResult()
+    if generation != _store.classroom_generation():
+        return ClassroomFetchResult(warnings=["Google Classroom: configurazione cambiata; ripeti la ricerca."])
+    result.warnings[:0] = warnings
+    return result
 
-    homework.sort(key=lambda x: x["date"])
+
+async def _schoolwork(start: str, end: str) -> tuple[list[AgendaItem], list[str], ClassroomFetchResult]:
+    (agenda, warnings), classroom = await asyncio.gather(_classeviva_agenda(start, end), _classroom_homework(start, end))
+    return agenda, warnings, classroom
+
+
+def _homework_response(
+    start: str, end: str, agenda: list[AgendaItem], classroom: ClassroomFetchResult, warnings: list[str],
+    *, cursor: str = "", limit: int = 20, include_details: bool = False,
+) -> dict[str, Any]:
+    homework = sorted(
+        [it for it in agenda if it.kind in ("homework", "exam")] + classroom.items,
+        key=lambda it: (it.date, it.time or "", it.id),
+    )
     breakdown = {"homework": 0, "exam": 0, "assignment": 0, "note": 0}
     for item in homework:
-        kind = item.get("kind", "")
-        breakdown[kind] = breakdown.get(kind, 0) + 1
-    summary = (
-        f"{len(homework)} impegni nei prossimi {days} giorni: "
-        f"{breakdown['exam']} verifiche/interrogazioni, {breakdown['homework']} compiti"
-    )
-    if breakdown["assignment"]:
-        summary += f", {breakdown['assignment']} consegne Classroom"
-    summary += "."
-    if warnings:
-        summary += " Attenzione: " + " ".join(warnings)
+        breakdown[item.kind] = breakdown.get(item.kind, 0) + 1
+    page, more = _page(homework, cursor, limit)
+    all_warnings = warnings + classroom.warnings
     return {
-        "today": start,
         "range": {"start_date": start, "end_date": end},
         "count": len(homework),
         "breakdown": breakdown,
-        "summary": summary,
-        "items": homework,
-        "warnings": warnings,
+        "items": [it.model_dump(
+            exclude_none=True, exclude_defaults=True,
+            exclude=set() if include_details else {"description"},
+        ) for it in page],
+        **more,
+        **({"warnings": all_warnings} if all_warnings else {}),
     }
+
+
+async def get_homework(
+    days_ahead: int = 7, start_date: str = "", end_date: str = "",
+    cursor: str = "", limit: int = 20, include_details: bool = False,
+) -> dict[str, Any]:
+    """Compiti e verifiche da ClasseViva e Classroom. Per un giorno preciso indica entrambe le date (YYYY-MM-DD).
+    Se omesse, da oggi a `days_ahead` giorni (max 60). Se `warnings` è presente, la verifica è parziale.
+    Usa `next_cursor` con le stesse date per continuare; `include_details=True` include le istruzioni.
+    """
+    _ensure_writable()
+    today = now_rome().date()
+    days = max(1, min(60, days_ahead))
+    start, warn_start = _validated_date(start_date, today.isoformat(), "start_date")
+    end, warn_end = _validated_date(end_date, (date.fromisoformat(start) + timedelta(days=days)).isoformat(), "end_date")
+    if not 0 <= (date.fromisoformat(end) - date.fromisoformat(start)).days <= 60:
+        raise ValueError("Intervallo non valido: scegli fino a 60 giorni tra inizio e fine.")
+    agenda, cv_warnings, classroom = await _schoolwork(start, end)
+    return _homework_response(
+        start, end, agenda, classroom, [w for w in (warn_start, warn_end) if w] + cv_warnings,
+        cursor=cursor, limit=limit, include_details=include_details,
+    )
 
 
 async def get_agenda(
@@ -854,135 +888,252 @@ async def get_absences() -> dict[str, Any]:
 
 
 
+async def _didactics_folders() -> tuple[list[DidacticsFolder], list[str]]:
+    try:
+        return await _client.get_didactics(), []
+    except Exception as exc:
+        logger.warning("Materiali didattici non disponibili: %s", type(exc).__name__)
+        return [], ["Materiali didattici non disponibili: la Didattica ClasseViva non è stata verificata."]
+
+
+def _matches(query: str, *fields: str) -> bool:
+    haystack = _strip_accents(" ".join(fields)).casefold()
+    return all(word in haystack for word in _strip_accents(query[:200]).casefold().split())
+
+
+def _didactics_item(folder: DidacticsFolder, file: DidacticsFile) -> dict[str, Any]:
+    return {
+        "id": file.content_id, "title": file.content_name[:240], "source": "classeviva",
+        "date": file.share_date or folder.last_share_date, "subject": folder.folder_name[:160],
+        **({"teacher": folder.teacher_name[:120]} if folder.teacher_name else {}),
+    }
+
+
+def _page(items: list[Any], cursor: str, limit: int) -> tuple[list[Any], dict[str, str]]:
+    if cursor and not re.fullmatch(r"[1-9][0-9]{0,7}", cursor):
+        raise ValueError("Cursore non valido: usa quello restituito dalla ricerca con gli stessi filtri.")
+    start = int(cursor) if cursor else 0
+    end = start + max(1, min(20, limit))
+    return items[start:end], ({"next_cursor": str(end)} if end < len(items) else {})
+
+
 async def list_didactics(
-    subject: str = "",
-    teacher: str = "",
+    subject: str = "", teacher: str = "", query: str = "", cursor: str = "", limit: int = 5,
+    view: str = "items",
 ) -> dict[str, Any]:
-    """Elenca e filtra i materiali didattici e i compiti condivisi dai docenti (Didattica) su ClasseViva.
-    I contenuti sono organizzati per cartella creata dal docente, con nome cartella, materia, docente
-    e lista dei file allegati (id, nome file, dimensione in byte, estensione/tipo e data di condivisione).
-    Usa l'ID del file (`file_id`) con il tool `download_didactics_item` per scaricare ed estrarre il testo del file.
-    `subject` filtra per materia (sottostringa case-insensitive); `teacher` per cognome del docente.
+    """Cerca file in Didattica ClasseViva per titolo, cartella o docente. Di default 5 risultati, max 20.
+    Ripassa `next_cursor` con gli stessi filtri; usa l'ID in `read_didactics_item`, `download_didactics_item`
+    o `prepare_attachment`. `view='folders'` è la vista compatibile per client precedenti, sempre paginata.
     """
     _ensure_writable()
-    subj_filter = subject.strip()
-    subj_clean = subj_filter.lower()
-    teacher_filter = teacher.strip()
-    teacher_clean = teacher_filter.lower()
+    if view not in ("items", "folders"):
+        raise ValueError("Scegli `items` oppure `folders`.")
+    folders, warnings = await _didactics_folders()
+    records = [
+        (folder, file)
+        for folder in folders if _matches(teacher, folder.teacher_name)
+        for file in folder.files
+        if _matches(subject, folder.folder_name, file.content_name)
+        and _matches(query, file.content_name, folder.folder_name, folder.teacher_name)
+    ]
+    if view == "folders":
+        batch, more = _page(records, cursor, limit)
+        grouped: dict[tuple[int | str, int | str], dict[str, Any]] = {}
+        for folder, file in batch:
+            row = grouped.setdefault(
+                (folder.teacher_id, folder.folder_id),
+                {**folder.model_dump(exclude={"files"}), "files": []},
+            )
+            row["files"].append(file.model_dump())
+        count = len({(folder.teacher_id, folder.folder_id) for folder, _ in records})
+        summary = f"Trovate {count} cartelle e {len(records)} file nei materiali didattici."
+        if not records:
+            summary = (
+                "Nessun materiale didattico trovato"
+                + (f" per materia '{subject.strip()}'" if subject.strip() else "") + "."
+            ) if not warnings else warnings[0]
+        return {
+            "folders": list(grouped.values()), "files_count": len(records), "folders_count": count,
+            "subject_filter": subject.strip() or None, "teacher_filter": teacher.strip() or None,
+            "summary": summary, "warnings": warnings, **more,
+        }
+    return _material_page([_didactics_item(folder, file) for folder, file in records], warnings, cursor, limit)
 
-    warnings: list[str] = []
+
+def _material_page(
+    items: list[dict[str, Any]], warnings: list[str], cursor: str, limit: int,
+) -> dict[str, Any]:
+    items.sort(key=lambda it: (it["title"].casefold(), it["source"], str(it["id"])))
+    items.sort(key=lambda it: it["date"], reverse=True)
+    page, more = _page(items, cursor, limit)
+    return {"items": page, **more, **({"warnings": warnings} if warnings else {})}
+
+
+async def _classroom_materials(required: bool) -> tuple[list[dict[str, Any]], list[str]]:
     try:
-        if hasattr(_client, "get_didactics"):
-            all_folders = await _client.get_didactics()
-        else:
-            all_folders = []
-    except Exception as exc:  # noqa: BLE001 - keep response resilient
-        logger.warning("Materiali didattici non disponibili: %s", type(exc).__name__)
-        all_folders = []
-        warnings.append(
-            f"Materiali didattici non disponibili in questo momento (errore API: {type(exc).__name__})."
-        )
+        generation = _store.classroom_generation()
+        token = await _classroom_tokens.access_token(_store)
+        if not token:
+            ical, token = _store.load_classroom_sources()
+            if not token:
+                return [], ([
+                    "Google Classroom: i materiali richiedono `classeviva-mcp classroom login`; iCal non li contiene."
+                ] if required or ical else [])
+        result = await fetch_classroom_materials(token)
+        if generation != _store.classroom_generation():
+            return [], ["Google Classroom: configurazione cambiata; ripeti la ricerca."]
+        return result
+    except ClassroomAuthError as exc:
+        return [], [str(exc)]
+    except Exception:
+        return [], ["Google Classroom: materiali non verificati."]
 
-    filtered_folders: list[dict[str, Any]] = []
-    total_files = 0
-    for folder in all_folders:
-        t_name = getattr(folder, "teacher_name", "") or ""
-        f_name = getattr(folder, "folder_name", "") or ""
-        if teacher_clean and teacher_clean not in t_name.lower():
-            continue
-        if subj_clean and subj_clean not in f_name.lower():
-            continue
-        folder_dict = folder.model_dump() if hasattr(folder, "model_dump") else dict(folder)
-        filtered_folders.append(folder_dict)
-        files = folder_dict.get("files", [])
-        total_files += len(files)
 
-    if not filtered_folders:
-        if subj_clean or teacher_clean:
-            criteria = []
-            if subj_clean:
-                criteria.append(f"materia '{subj_filter}'")
-            if teacher_clean:
-                criteria.append(f"docente '{teacher_filter}'")
-            summary = f"Nessun materiale didattico trovato per {' e '.join(criteria)}."
-        else:
-            summary = "Nessun materiale didattico presente nella sezione Didattica."
+async def search_materials(
+    query: str = "", source: str = "all", cursor: str = "", limit: int = 5,
+) -> dict[str, Any]:
+    """Cerca materiali per titolo o materia in ClasseViva e Classroom (`all`, `classeviva`, `classroom`).
+    Restituisce solo metadati e, per Classroom, il link originale se disponibile. Non scarica file Drive.
+    """
+    _ensure_writable()
+    if source not in ("all", "classeviva", "classroom"):
+        raise ValueError("Fonte non valida: usa `all`, `classeviva` o `classroom`.")
+    if source == "classeviva":
+        return await list_didactics(query=query, cursor=cursor, limit=limit)
+    if source == "classroom":
+        items, warnings = await _classroom_materials(required=True)
     else:
-        summary = f"Trovate {len(filtered_folders)} cartelle e {total_files} file nei materiali didattici."
+        (folders, warnings), (items, google_warnings) = await asyncio.gather(
+            _didactics_folders(), _classroom_materials(required=False),
+        )
+        warnings.extend(google_warnings)
+        items.extend(_didactics_item(folder, file) for folder in folders for file in folder.files)
+    matches = [it for it in items if _matches(query, it["title"], it["subject"], it.get("teacher", ""))]
+    return _material_page(matches, warnings, cursor, limit)
 
+
+def _didactics_text(raw_bytes: bytes, filename: str) -> dict[str, Any]:
+    try:
+        text = extract_attachment_text(raw_bytes, file_name=filename)
+    except Exception as exc:
+        logger.warning("Estrazione testo Didattica fallita: %s", type(exc).__name__)
+        return {"text": "", "is_text_truncated": False, "warnings": ["Testo non estraibile da questo file."]}
+    max_chars = 10_000
+    truncated = len(text) > max_chars
     return {
-        "today": today_rome_str(),
-        "subject_filter": subj_filter or None,
-        "teacher_filter": teacher_filter or None,
-        "folders_count": len(filtered_folders),
-        "files_count": total_files,
-        "summary": summary,
-        "folders": filtered_folders,
-        "warnings": warnings,
+        "text": text[:max_chars] + (f"\n… [Testo troncato: {len(text)} caratteri totali]" if truncated else ""),
+        "is_text_truncated": truncated,
     }
+
+
+def _file_metadata(file_id: int | str, raw_bytes: bytes, file_name: str, content_type: str) -> dict[str, Any]:
+    return {
+        "file_id": file_id, "file_name": safe_filename(file_name, f"didattica_{file_id}.bin"),
+        "content_type": content_type, "size_bytes": len(raw_bytes),
+    }
+
+
+async def read_didactics_item(file_id: int | str) -> dict[str, Any]:
+    """Estrae fino a 10.000 caratteri da un singolo file ClasseViva senza salvarlo."""
+    _ensure_writable()
+    validate_file_id(file_id)
+    raw, name, mime = await _client.download_didactics_file(file_id)
+    return {**_file_metadata(file_id, raw, name, mime), **_didactics_text(raw, name)}
 
 
 async def download_didactics_item(
-    file_id: int,
-    destination_folder: str = "",
+    file_id: int | str, destination_folder: str = "", include_text: bool = False,
 ) -> dict[str, Any]:
-    """Scarica sul disco locale un singolo file dai materiali didattici specificandone il `file_id`.
-    Se il file scaricato è un documento di testo o foglio (.pdf, .docx, .xlsx, .txt, .csv),
-    estrae automaticamente il testo leggibile per l'agente tramite il motore di parsing integrato.
-    Il file viene salvato con permessi privati (0o600) nella cartella predefinita di classeviva-mcp
-    o nel percorso personalizzato indicato in `destination_folder`.
+    """Salva un file ClasseViva sul computer del server, senza leggerlo. Usa una cartella
+    indicata dall'utente per una copia che sopravviva al purge. `include_text=True` è l'opzione compatibile.
     """
     _ensure_writable()
-    raw_bytes, file_name, content_type = await _client.download_didactics_file(file_id)
-
-    default_didactics_dir = (_store.data_dir / "didactics").resolve()
-    if destination_folder.strip():
-        out_dir = Path(destination_folder).expanduser().resolve()
-    else:
-        out_dir = default_didactics_dir
+    safe_id = validate_file_id(file_id)
+    raw, name, mime = await _client.download_didactics_file(file_id)
+    result = _file_metadata(file_id, raw, name, mime)
+    managed = _store.didactics_dir.resolve()
+    out_dir = Path(destination_folder).expanduser().resolve() if destination_folder.strip() else managed
     out_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-
-    safe_id = "".join(c for c in str(file_id) if c.isalnum() or c in ("-", "_"))
-    clean_name = re.sub(r'[<>:"/\\|?*]', "_", file_name).strip() if file_name else ""
-    if not clean_name:
-        clean_name = f"didattica_{safe_id}.bin"
-
-    if clean_name.startswith(f"{safe_id}_"):
-        target = out_dir / clean_name
-    else:
-        target = out_dir / f"{safe_id}_{clean_name}"
-
-    _write_private_bytes(target, raw_bytes)
-    if not destination_folder.strip() or out_dir == default_didactics_dir:
+    target = out_dir / f"{safe_id}_{result['file_name']}"
+    if out_dir == managed:
+        _write_private_bytes(target, raw)
         _prune_attachments_dir(out_dir)
-
-    try:
-        extracted_text = extract_attachment_text(raw_bytes, file_name=file_name)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Estrazione testo fallita per '%s': %s", file_name or safe_id, exc)
-        extracted_text = ""
-    is_text_truncated = False
-    max_chars = 10_000
-    if len(extracted_text) > max_chars:
-        extracted_text = extracted_text[:max_chars] + f"\n... [Testo troncato: {len(extracted_text)} caratteri totali]"
-        is_text_truncated = True
-
-    size_kb = len(raw_bytes) / 1024
-    if extracted_text:
-        summary = f"File '{file_name or safe_id}' ({size_kb:.1f} KB) scaricato ed estratto con successo."
     else:
-        summary = f"File '{file_name or safe_id}' ({size_kb:.1f} KB) scaricato con successo (nessun testo estraibile)."
+        try:
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            raise ValueError("La copia esiste già; scegli un'altra cartella.") from None
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(raw)
+    result["saved_path"] = str(target)
+    if include_text:
+        result.update(_didactics_text(raw, name))
+    return result
 
-    return {
-        "file_id": file_id,
-        "file_name": file_name,
-        "content_type": content_type,
-        "size_bytes": len(raw_bytes),
-        "saved_path": str(target),
-        "text": extracted_text,
-        "is_text_truncated": is_text_truncated,
-        "summary": summary,
-    }
+
+async def prepare_attachment(
+    file_id: int | str | None = None, notice_id: str = "", event_code: str = "CF",
+    attachment_index: int = 0, page: int | None = None, allow_mark_as_read: bool = False,
+) -> list[ResourceLink | TextContent]:
+    """Prepara un file ClasseViva, o una sola pagina PDF (1-based) come PNG, da consegnare
+    tramite un client MCP fidato. Non invia messaggi, non apre Drive e non estrae testo.
+    Per una circolare, `attachment_index` parte da 0. Chiedi conferma prima di segnare come letta.
+    """
+    _ensure_writable()
+    if (file_id is not None) == bool(notice_id):
+        raise ValueError("Indica solo `file_id` oppure `notice_id`.")
+    if page is not None and not 1 <= page <= 50:
+        raise ValueError("La pagina deve essere compresa tra 1 e 50.")
+    generation = _store.auth_generation()
+    try:
+        if file_id is not None:
+            validate_file_id(file_id)
+            raw, name, _ = await _client.download_didactics_file(file_id)
+        else:
+            if (
+                not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", notice_id)
+                or not re.fullmatch(r"[a-zA-Z0-9_-]{1,16}", event_code)
+                or attachment_index < 0
+            ):
+                raise ValueError("Identificativo circolare o indice dell'allegato non valido.")
+            notice = await _client.read_notice_content(
+                event_code=event_code, pub_id=notice_id, attachment_index=attachment_index,
+                allow_mark_as_read=allow_mark_as_read,
+            )
+            if notice.get("skipped"):
+                prompt = (
+                    "Aprirla la segnerà come letta sul registro. Procedo?"
+                    if notice.get("read_state_known")
+                    else "Lo stato di lettura non è verificato. Riprovare o autorizzare l'apertura, che può segnarla come letta?"
+                )
+                return [TextContent(type="text", text=prompt)]
+            files = notice.get("attachments") or []
+            if len(files) != 1 or not files[0].get("bytes"):
+                return [TextContent(type="text", text="Allegato non disponibile; controlla l'indice selezionato.")]
+            raw = files[0]["bytes"]
+            name = files[0].get("file_name") or ("circolare.pdf" if raw.startswith(b"%PDF") else "circolare.bin")
+    except (httpx.HTTPError, ClasseVivaError):
+        return [TextContent(type="text", text="Download non riuscito. Verifica l'accesso a ClasseViva o prova a salvare in locale.")]
+    if generation != _store.auth_generation():
+        raise ValueError("Account cambiato durante il download. Riprova.")
+    if page is not None:
+        raw = render_pdf_page(raw, page)
+        name = f"{Path(safe_filename(name, 'allegato')).stem[:110]}-pagina-{page}.png"
+    try:
+        return [_handoff.offer(raw, name, generation)]
+    except ValueError as exc:
+        return [TextContent(type="text", text=str(exc))]
+
+
+def _register_attachment_resource(kind: str, mime: str) -> None:
+    @mcp.resource(f"classeviva://attachment/{kind}/{{key}}", name=f"attachment_{kind}", mime_type=mime)
+    def attachment(key: str) -> bytes:
+        """Risorsa binaria temporanea, valida per una sola lettura."""
+        _ensure_writable()
+        try:
+            return _handoff.take(kind, key, _store.auth_generation())
+        except ValueError as exc:
+            raise ResourceError(str(exc)) from None
 
 
 async def get_calendar(
@@ -1264,21 +1415,23 @@ async def get_snapshot(days_ahead: int = 7) -> dict[str, Any]:
     ATTENZIONE: Le note disciplinari sono categoricamente ESCLUSE dallo snapshot per rispetto della privacy dello studente.
     In modalità read-only il tool non viene registrato.
     """
+    _ensure_writable()
     days = max(1, min(60, days_ahead))
-    start = now_rome().strftime("%Y-%m-%d")
-    end = (now_rome() + timedelta(days=days)).strftime("%Y-%m-%d")
+    today = now_rome().date()
+    start, end = today.isoformat(), (today + timedelta(days=days)).isoformat()
 
-    context, grades, absences, homework, agenda, calendar, didactics = await asyncio.gather(
-        get_today_context(include_timetable=True),
+    context, grades, absences, (agenda_items, agenda_warnings, classroom), calendar, (folders, didactics_warnings) = await asyncio.gather(
+        get_today_context(),
         get_grades(),
         get_absences(),
-        get_homework(days_ahead=days),
-        get_agenda(start_date=start, end_date=end),
+        _schoolwork(start, end),
         get_calendar(days_ahead=days),
-        list_didactics(),
+        _didactics_folders(),
     )
+    homework = _homework_response(start, end, agenda_items, classroom, agenda_warnings)
+    agenda = [it.model_dump(exclude_none=True, exclude_defaults=True) for it in agenda_items if it.kind == "note"]
     all_warnings: list[str] = []
-    for section in (context, grades, absences, homework, agenda, calendar, didactics):
+    for section in (context, grades, absences, homework, calendar, {"warnings": didactics_warnings}):
         for warning in section.get("warnings", []):
             if warning not in all_warnings:
                 all_warnings.append(warning)
@@ -1290,10 +1443,8 @@ async def get_snapshot(days_ahead: int = 7) -> dict[str, Any]:
         "summary": calendar.get("summary", ""),
     }
     didactics_summary = {
-        "folders_count": didactics.get("folders_count", 0),
-        "files_count": didactics.get("files_count", 0),
-        "new_didactics_count": didactics.get("files_count", 0),
-        "summary": didactics.get("summary", ""),
+        "folders_count": len(folders),
+        "files_count": sum(len(folder.files) for folder in folders),
     }
 
     result = {
@@ -1323,16 +1474,14 @@ async def get_snapshot(days_ahead: int = 7) -> dict[str, Any]:
         "homework": {
             "count": homework["count"],
             "breakdown": homework["breakdown"],
-            "summary": homework["summary"],
-            "warnings": homework["warnings"],
-            "also_in_agenda": True,
+            **({"warnings": homework["warnings"]} if homework.get("warnings") else {}),
+            **({"next_cursor": homework["next_cursor"]} if homework.get("next_cursor") else {}),
             "items": homework["items"],
         },
         "agenda": {
-            "count": agenda["count"],
-            "includes_homework": True,
-            "warnings": agenda["warnings"],
-            "events": agenda["events"],
+            "count": len(agenda),
+            "includes_homework": False,
+            "events": agenda,
         },
         "upcoming_holidays": upcoming_holidays,
         "didactics": didactics_summary,
@@ -1417,7 +1566,7 @@ async def read_notice_pdf(
     attach_num: int | None = None,
     attachment_index: int | None = None,
     filter_keyword: str = "",
-    save_pdf: bool = True,
+    save_pdf: bool = False,
     allow_mark_as_read: bool = False,
 ) -> dict[str, Any]:
     """Scarica ed estrae il testo di una circolare e dei suoi allegati (.pdf, .docx, .xlsx, .zip) dalla bacheca:
@@ -1426,8 +1575,8 @@ async def read_notice_pdf(
       solo le pagine o le colonne della classe, riducendo il consumo di token fino al 90%.
       Nei tabelloni orario che impilano più classi nella stessa pagina ritaglia la sola griglia della classe
       richiesta (intestazione tipo `5 AI - Settimana …`), così non restituisce docenti e aule di altre classi.
-    - Se un allegato PDF è una scansione senza testo selezionabile (< 50 caratteri), renderizza automaticamente
-      le pagine a 150 DPI in immagini PNG (`rendered_page_images`) così l'agent può leggerle tramite Vision.
+    - Per una scansione usa `prepare_attachment` con `page` (una pagina PNG). `save_pdf=True` abilita
+      il vecchio salvataggio locale dell'allegato e delle prime pagine PNG.
     - `attachment_index` (0-based) permette di selezionare un singolo allegato se la circolare ne ha più d'uno.
     - Sblocco automatico allegati (404): se un allegato restituisce 404 perché non ancora aperto sul registro,
       il client esegue automaticamente la richiesta di lettura per sbloccarlo e riprova il download,
@@ -1463,11 +1612,12 @@ async def read_notice_pdf(
     }
 
     if raw.get("skipped"):
-        if base_result["notice_read_state_known"]:
+        if READ_ONLY_MODE:
+            skipped_text = "La modalità sola lettura non consente di aprire questa circolare."
+        elif base_result["notice_read_state_known"]:
             skipped_text = (
-                "La circolare non è ancora stata aperta su Spaggiari. Per scaricare testo integrale e allegati "
-                "serve contrassegnarla come letta: richiama il tool con `allow_mark_as_read=True` dopo aver "
-                "avvisato lo studente. In modalità read-only questa operazione non è consentita."
+                "Aprirla la segnerà come letta sul registro. Procedo? "
+                "Usa `allow_mark_as_read=True` solo dopo la conferma."
             )
         else:
             skipped_text = (
@@ -1512,7 +1662,7 @@ async def read_notice_pdf(
             has_pdf_bytes = True
             txt, total_pages, included_pages = extract_pdf_text(b, filter_keyword=effective_filter)
             pdf_text_len += len(txt.strip())
-            if len(txt.strip()) < 50 and total_pages > 0 and not READ_ONLY_MODE:
+            if len(txt.strip()) < 50 and total_pages > 0 and effective_save:
                 imgs = render_scanned_pdf_pages(b, notice_id, out_dir)
                 rendered_images.extend(imgs)
             if txt:
@@ -1544,8 +1694,7 @@ async def read_notice_pdf(
             "attachments_count": len(attachments),
             "text": combined_text
             or (
-                "PDF scansionato come immagine (meno di 50 caratteri di testo selezionabile). "
-                "Ispeziona i file PNG in `rendered_page_images` con Vision."
+                "PDF scansionato come immagine. Chiedi quale pagina serve e usa `prepare_attachment`."
             ),
             "is_scanned_image_pdf": is_scanned_image_pdf,
             "rendered_page_images": rendered_images,
@@ -1565,7 +1714,8 @@ def setup() -> str:
         "e salvali con `update_student_context`.\n"
         "3) Cerca con `list_notices(query='orario')` l'ultima circolare dell'orario, estraila filtrando per la mia classe con `read_notice_pdf`, "
         "chiedendomi conferma prima di usare `allow_mark_as_read=True`, e salva il mio orario settimanale con `save_class_timetable`.\n"
-        "4) Per il link segreto .ics di Google Classroom, ricordami di eseguire `classeviva-mcp set-classroom-url` nel terminale."
+        "4) Per Google Classroom indica `classeviva-mcp classroom login` nel terminale. "
+        "In alternativa usa `set-classroom-url`: non chiedere mai il link iCal in chat."
     )
 
 
@@ -1727,7 +1877,12 @@ if not READ_ONLY_MODE:
     mcp.tool()(get_absences)
     mcp.tool()(get_snapshot)
     mcp.tool()(list_didactics)
+    mcp.tool()(search_materials)
     mcp.tool()(download_didactics_item)
+    mcp.tool()(read_didactics_item)
+    mcp.tool(structured_output=False)(prepare_attachment)
+    for _kind, _mime in MIME_TYPES.items():
+        _register_attachment_resource(_kind, _mime)
     mcp.tool()(get_calendar)
     mcp.tool()(get_notes)
     mcp.tool()(get_documents)

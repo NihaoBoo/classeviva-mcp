@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "classeviva-mcp"
-version = "1.5.0"
-description = "Server MCP (Model Context Protocol) per il registro elettronico Spaggiari ClasseViva e Google Classroom iCal"
+version = "1.6.0"
+description = "Server MCP per il registro elettronico Spaggiari ClasseViva e Google Classroom"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE", "NOTICE.md"]
@@ -62,6 +62,12 @@ Security = "https://github.com/NihaoBoo/classeviva-mcp/blob/main/SECURITY.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/classeviva_mcp"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src/classeviva_mcp", "/tests", "/docs", "/pyproject.toml", "/uv.lock",
+    "/README.md", "/CHANGELOG.md", "/PRIVACY.md", "/SECURITY.md", "/LICENSE", "/NOTICE.md",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -4,8 +4,9 @@
 
 | Version | Supported |
 | ------- | --------- |
-| 1.1.x   | ✅ |
-| < 1.1   | ❌ |
+| 1.5.x   | ✅ |
+| 1.6.x   | ✅ |
+| < 1.5   | ❌ |
 
 ## Reporting a vulnerability
 
@@ -19,10 +20,10 @@ Please **do not open a public issue** for security problems.
 You will receive an acknowledgement as soon as possible. Please allow reasonable
 time for a fix before public disclosure.
 
-## Security model (v1.2.1)
+## Security model (1.6)
 
-`classeviva-mcp` is a **single-account local connector**. It does not authenticate
-MCP callers and is not a multi-user service. Do not expose it to untrusted users,
+`classeviva-mcp` is a **single-account connector**. Local stdio relies on OS
+process access; HTTP requires authentication. It is not a multi-user service. Do not expose it to untrusted users,
 public networks, shared group chats, or the open Internet.
 
 ### Credentials
@@ -39,13 +40,30 @@ public networks, shared group chats, or the open Internet.
   user has typed their password.
 - Files are written atomically with `0600` permissions where the platform
   supports them.
-- `session_cache.json` is minimised to `token`, `ident`, `student_id`.
+- `session_cache.json` contains `token`, `ident`, `student_id` and a random
+  login generation. Previous generations and legacy unbound sessions are
+  not accepted. Environment credentials do not use the disk session cache.
 - The Google Classroom iCal URL is stored in the keyring/encrypted fallback and
   is migrated out of `student_context.json` on load.
 - `GOOGLE_ACCESS_TOKEN`, `CLASSEVIVA_USER`, `CLASSEVIVA_PASSWORD`,
-  `CLASSROOM_ICAL_URL` and `CLASSEVIVA_PROFILE` are read from the environment at
+  `CLASSROOM_ICAL_URL`, `CLASSEVIVA_PROFILE` and `CLASSEVIVA_MCP_TOKEN` are
+  read from the environment at
   runtime and are never written to disk by the program. `logout` does not clear
   them; remove them from the shell or client configuration manually.
+
+### Google Classroom authorization
+
+`classroom login` is a separate, outbound OAuth client. It uses the system
+browser, Authorization Code with PKCE S256, a single-use random `state`,
+and a short-lived callback bound to a random port on `127.0.0.1`. Token and
+revocation requests target fixed Google HTTPS endpoints without redirects;
+callback URLs and token responses are not logged. No Drive or write scope is
+requested.
+
+Only the refresh grant and client configuration needed for renewal are
+persisted, in Keyring or DPAPI (no plaintext override). This does not grant
+access to any third-party MCP caller. Use a client approved by your school;
+see [Classroom setup](docs/classroom.md).
 
 ### Network (SSRF)
 
@@ -99,6 +117,9 @@ attachment download. `notice_read_state_known` reports which case occurred.
 | Attachment download (streamed) | 20 MB per attachment |
 | Total attachments per notice (streamed) | 40 MB |
 | iCal feed (streamed) | 5 MB |
+| Classroom search | At most 100 API pages and 25 s per scan; partial results carry warnings |
+| Attachment handoff | 8 MiB each; 8 pending and 24 MiB total per instance; 90 s / single read |
+| Materials and homework tool pages | 20 rows max; full homework instructions only on request |
 | PDF pages parsed | 50 |
 | DOCX `word/document.xml` | 10 MB |
 | ZIP entries | 15 |
@@ -112,15 +133,22 @@ attachment download. `notice_read_state_known` reports which case occurred.
 
 ### Logout
 
-- `classeviva-mcp logout` removes credentials and the session cache, but keeps
-  the timetable and notes.
-- `classeviva-mcp logout --purge` also removes `student_context.json` and the
-  attachment cache.
+- Stop the server, clients and bridges first so no process retains sessions
+  or connection tokens in memory.
+- `classeviva-mcp classroom logout` removes Classroom OAuth and legacy iCal/token
+  settings without removing the Spaggiari credentials.
+- `classeviva-mcp logout` removes source credentials and persisted sessions,
+  including managed inbound OAuth grants and the saved bearer token. It keeps
+  the timetable, notes, file caches and the remote owner passphrase hash.
+- `classeviva-mcp logout --purge` also removes `student_context.json`,
+  `attachments/`, `didactics/` and the managed remote owner configuration.
+  Explicit exports outside the managed caches are not removed.
 - Neither command requires administrator privileges.
-- `logout` removes local data only: it does not revoke the Spaggiari session
-  token server-side. If the token may have been copied, change the ClasseViva
-  password from another device.
-- Environment variables are not cleared by `logout`.
+- Both logout modes attempt to revoke the managed Google grant; a failed
+  revocation leaves the local grant removed and points to Google settings.
+  No supported Spaggiari revocation endpoint is called.
+- Environment variables, custom token files, browser sessions, and client
+  or Discord history are not cleared by `logout`.
 
 ### Computer pubblici o condivisi
 
@@ -142,7 +170,7 @@ stesso account.
 
 **Prima di lasciare un computer non tuo, esegui `logout --purge`.** Il comando
 non richiede privilegi di amministratore e rimuove le voci del Keyring,
-`session_cache.json`, `student_context.json` e la cartella `attachments/`.
+sessioni, contesto e le cartelle gestite `attachments/` e `didactics/`.
 Cancellare a mano solo le voci del Keyring **non basta**: `session_cache.json`
 contiene il token di sessione e resta fino a `logout`. Su Windows è cifrato con
 DPAPI; su Linux/macOS con Keyring non viene creato; con
@@ -210,7 +238,14 @@ MCP resources are read-only documents addressed by URI
 (`classeviva://profile`, `classeviva://grades`, ...). They expose exactly the
 same data as the corresponding tools, follow the same `READ_ONLY_MODE`
 rules (the personal ones are not registered in read-only mode), and never
-contain secrets such as the iCal URL or the OAuth token.
+  contain authentication secrets such as the iCal URL or the OAuth token.
+
+`prepare_attachment` is only available in personal mode. It returns a
+single-use, opaque `ResourceLink` scoped to the server instance and current
+login generation, never a path or the file bytes in the tool response.
+Authorized clients can recover bytes through `resources/read`; the URI is
+not a public download URL. A bridge must scope delivery to the configured
+owner, control what goes into model context, and not log or replay bytes.
 
 ## Hardening checklist for users
 

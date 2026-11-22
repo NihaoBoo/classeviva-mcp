@@ -206,7 +206,7 @@ async def test_get_snapshot_enrichment_and_privacy(
 ) -> None:
     """Stress-test snapshot enrichment:
     - upcoming_holidays is populated with count, holidays, summary.
-    - didactics is populated with folders_count, files_count, new_didactics_count.
+    - didactics is populated with folders_count and files_count, without inferring novelty.
     - Zero tolerance: 'notes' and 'disciplinary_notes' MUST NOT exist anywhere in any key/subkey.
     """
     store = CredentialStore(fallback_dir=tmp_path, allow_insecure_plaintext=True)
@@ -237,8 +237,7 @@ async def test_get_snapshot_enrichment_and_privacy(
     didactics_sec = snapshot["didactics"]
     assert didactics_sec["folders_count"] == 2
     assert didactics_sec["files_count"] == 3
-    assert didactics_sec["new_didactics_count"] == 3
-    assert "summary" in didactics_sec
+    assert "new_didactics_count" not in didactics_sec
 
     # 4. Assert zero tolerance for disciplinary notes in top-level keys
     assert "notes" not in snapshot, "CRITICAL: 'notes' key leaked into snapshot root!"
@@ -595,4 +594,3 @@ def test_read_only_mode_subshell_tool_and_prompt_invocation_rejection() -> None:
         check=True,
     )
     assert "ALL_REJECTIONS_VERIFIED" in res.stdout
-
