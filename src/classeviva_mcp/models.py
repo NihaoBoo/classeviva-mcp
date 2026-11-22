@@ -100,8 +100,6 @@ class StudentContextOut(BaseModel):
     custom_notes: str = ""
     school_year: str = ""
     classroom_ical_configured: bool = False
-    timetable: ClassTimetable | None = None
-    seen_notice_ids: list[str] = Field(default_factory=list)
     updated_at: str = ""
 
 
@@ -112,7 +110,6 @@ class PublicStudentContextOut(BaseModel):
     course_name: str = ""
     school_year: str = ""
     classroom_ical_configured: bool = False
-    timetable: ClassTimetable | None = None
 
 
 

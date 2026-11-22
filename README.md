@@ -245,7 +245,7 @@ Su [Discord Developer Portal](https://discord.com/developers/applications):
 
 | Tool | Descrizione | Disabilitato in `READ_ONLY_MODE`? |
 |---|---|---|
-| `get_today_context` | Data/ora (`Europe/Rome`), profilo minimizzato, contesto, materie/professori e orario. | No |
+| `get_today_context` | Data/ora (`Europe/Rome`), profilo minimizzato, contesto, materie/professori, lezioni di oggi e del prossimo giorno di scuola; orario completo con `include_timetable=True`. | No |
 | `update_student_context` | Salva o aggiorna classe (`5 AI` → `5AI`), indirizzo, n. registro e note. Il link iCal non si configura da qui. | 🔒 **Sì** |
 | `save_class_timetable` | Valida e salva **solo in locale** l'orario settimanale della classe: non viene inviato al registro scolastico. | 🔒 **Sì** |
 | `get_homework` | Compiti e consegne dei prossimi N giorni (ClasseViva + Classroom) con `breakdown`, `summary` e `warnings`. | 🔒 **Sì** |
