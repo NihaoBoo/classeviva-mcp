@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from classeviva_mcp import __version__
+from classeviva_mcp.classroom_auth import ClassroomAuthError, connect, disconnect
 from classeviva_mcp.classroom_ical import validate_ical_url
 from classeviva_mcp.client import ClasseVivaAuthError, ClasseVivaError, SpaggiariClient
 from classeviva_mcp.credentials import CredentialStore, StoredCredentials
@@ -133,13 +134,6 @@ def _launch_advice() -> list[str]:
     return []
 
 
-def _mask_ident(ident: str) -> str:
-    value = (ident or "").strip()
-    if len(value) <= 5:
-        return "***"
-    return f"{value[0]}****{value[-4:]}"
-
-
 def _credential_backend_label(backend: str) -> tuple[str, str]:
     """Returns a friendly name and a short description for the storage backend."""
     if backend == "keyring":
@@ -205,6 +199,18 @@ async def _cmd_login(args: argparse.Namespace) -> int:
         print("Errore: l'utente non può contenere spazi o caratteri invisibili.", file=sys.stderr)
         return 1
 
+    previous = _stored_username(store)
+    if previous and previous.casefold() != username.casefold():
+        print("Per cambiare account, arresta il server e usa prima `classeviva-mcp logout --purge`.", file=sys.stderr)
+        return 1
+    retained = any(path.exists() for path in (store.context_file, store.attachments_dir, store.didactics_dir))
+    if not previous and retained and not args.keep_local_data:
+        print(
+            "Esistono dati conservati da un login precedente. Per un altro account usa `logout --purge`; "
+            "per lo stesso account usa `login --keep-local-data`.",
+            file=sys.stderr,
+        )
+        return 1
     password = getpass.getpass("2. Password ClasseViva (nascosta mentre scrivi): ")
     # Pasting can append a newline/CR; never strip regular spaces, they may be real.
     password = password.rstrip("\r\n")
@@ -234,20 +240,11 @@ async def _cmd_login(args: argparse.Namespace) -> int:
             print(f"Errore classe: {exc}", file=sys.stderr)
             return 1
     course_name = input("4. Indirizzo di studio [es. Informatica, premi Invio per saltare]: ").strip()
-    ical_url = input("5. Link .ics Google Classroom [Opzionale, premi Invio per saltare]: ").strip()
-    if ical_url:
-        try:
-            ical_url = validate_ical_url(ical_url)
-        except ValueError as exc:
-            print(f"Errore link iCal: {exc}", file=sys.stderr)
-            return 1
-
     # Validate the credentials against Spaggiari BEFORE storing them: a wrong
     # password must never end up in the Keyring or in the fallback file.
     candidate = StoredCredentials(
         username=username,
         password=password,
-        classroom_ical_url=ical_url,
         source="login",
     )
 
@@ -260,7 +257,7 @@ async def _cmd_login(args: argparse.Namespace) -> int:
         previous = _stored_username(store)
         if previous:
             print(
-                f"Restano salvate le credenziali precedenti ({_mask_ident(previous)}): il server MCP\n"
+                "Restano salvate le credenziali precedenti: il server MCP\n"
                 "e `doctor` continueranno a usarle. Per rimuoverle: `classeviva-mcp logout`.",
                 file=sys.stderr,
             )
@@ -273,9 +270,9 @@ async def _cmd_login(args: argparse.Namespace) -> int:
         await probe_client.aclose()
 
     try:
-        backend = store.save(username=username, password=password, classroom_ical_url=ical_url)
-    except RuntimeError as exc:
-        print(f"Errore salvataggio credenziali: {exc}", file=sys.stderr)
+        backend = store.save(username=username, password=password)
+    except (RuntimeError, OSError):
+        print("Errore durante il salvataggio locale delle credenziali.", file=sys.stderr)
         return 1
 
     if school_class or course_name:
@@ -292,14 +289,10 @@ async def _cmd_login(args: argparse.Namespace) -> int:
     print("  LOGIN COMPLETATO")
     print("=" * 64)
     print()
-    print(f"  Account    : {profile.account_type.upper()} ({_mask_ident(profile.ident)})")
+    print(f"  Account    : {profile.account_type.upper()}")
     print(f"  Sicurezza  : {backend_label}")
     print(f"               {backend_detail}")
-    if args.verbose:
-        if profile.school_name:
-            print(f"  Istituto   : {profile.school_name}")
-        if school_class or profile.school_class:
-            print(f"  Classe     : {(school_class or profile.school_class).upper()}")
+    print("  Google Classroom è separato: `classeviva-mcp classroom login --help`.")
     print()
     print("-" * 64)
     print("  CONFIGURAZIONE MCP")
@@ -353,46 +346,35 @@ async def _cmd_doctor(args: argparse.Namespace) -> int:
     try:
         creds = store.load()
         ident_kind = "email" if "@" in creds.username else "codice utente"
-        print(f"[OK] Credenziali trovate (sorgente: {creds.source}, {ident_kind} {_mask_ident(creds.username)})")
+        print(f"[OK] Credenziali trovate (sorgente: {creds.source}, {ident_kind})")
         print(f"     Cartella dati      : {store.data_dir}")
         print(f"     Sessione in cache  : {'presente' if store.session_file.exists() else 'assente'}")
         if creds.source == "env":
             print("[i]  CLASSEVIVA_USER/CLASSEVIVA_PASSWORD hanno la precedenza sul Keyring.")
-    except Exception as exc:
-        print(f"[FAIL] {exc}")
+    except Exception:
+        print("[FAIL] Credenziali ClasseViva non disponibili: esegui `classeviva-mcp login`.")
         return 1
 
     client = SpaggiariClient(store=store)
     try:
         profile = await client.get_profile()
-        ctx = store.load_student_context()
-        info_label = "OK"
-        if args.verbose:
-            info_label = ctx.school_class or profile.school_class or profile.school_name or "OK"
-        print(
-            f"[OK] Login Spaggiari riuscito "
-            f"(tipo account: {profile.account_type}, info: {info_label})"
-        )
+        print(f"[OK] Login Spaggiari riuscito (tipo account: {profile.account_type})")
     except ClasseVivaAuthError as exc:
         print(f"[FAIL] Login Spaggiari fallito: {exc}")
         print("       Le credenziali salvate non sono valide: esegui `classeviva-mcp login`")
         print("       (le vecchie vengono sostituite solo se la nuova password è corretta).")
         await client.aclose()
         return 1
-    except Exception as exc:
-        print(f"[FAIL] Login Spaggiari fallito: {exc}")
+    except Exception:
+        print("[FAIL] Login Spaggiari fallito. Controlla la connessione e riprova.")
         await client.aclose()
         return 1
 
     try:
-        grades = await client.get_grades()
-        notices = await client.list_notices()
-        subjects = await client.get_subjects()
-        print(f"[OK] Endpoint Materie/Prof raggiungibile ({len(subjects)} materie rilevate)")
-        print(f"[OK] Endpoint Voti raggiungibile ({len(grades)} voti letti)")
-        print(f"[OK] Endpoint Bacheca raggiungibile ({len(notices)} circolari in elenco)")
-    except Exception as exc:
-        print(f"[WARN] Errore lettura endpoint: {exc}")
+        await client.get_subjects()
+        print("[OK] Endpoint Materie raggiungibile.")
+    except Exception:
+        print("[WARN] Endpoint Materie non raggiungibile.")
         return 1
     finally:
         await client.aclose()
@@ -430,21 +412,58 @@ def _cmd_set_classroom_url(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_logout(args: argparse.Namespace) -> int:
+def _warn_google_revocation(revoked: bool) -> None:
+    if not revoked:
+        print(
+            "Revoca Google non confermata. Rimuovi l'accesso dell'app da https://myaccount.google.com/permissions.",
+            file=sys.stderr,
+        )
+
+
+async def _cmd_classroom(args: argparse.Namespace) -> int:
+    store = CredentialStore()
+    if args.classroom_command == "login":
+        if not sys.stdin.isatty():
+            print("Esegui `classroom login` in un terminale sul PC con il browser.", file=sys.stderr)
+            return 1
+        print("Si apre Google nel browser: scegli il tuo account scolastico.")
+        try:
+            await connect(store, args.client_secrets)
+        except ClassroomAuthError as exc:
+            print(f"[ERRORE] {exc}", file=sys.stderr)
+            return 1
+        except Exception:
+            print("[ERRORE] Google non collegato: controlla il browser e l'archivio sicuro del sistema.", file=sys.stderr)
+            return 1
+        print("Google Classroom collegato in sola lettura.")
+        return 0
+    try:
+        revoked = await disconnect(store)
+    except Exception:
+        print("[ERRORE] Rimozione locale Google incompleta; verifica il Keyring e riprova.", file=sys.stderr)
+        return 1
+    print("Configurazione locale Classroom rimossa. ClasseViva resta collegato.")
+    print("Rimuovi manualmente CLASSROOM_ICAL_URL e GOOGLE_ACCESS_TOKEN se configurate.")
+    _warn_google_revocation(revoked)
+    return 0 if revoked else 1
+
+
+async def _cmd_logout(args: argparse.Namespace) -> int:
     store = CredentialStore()
     try:
-        store.clear(purge_all=args.purge)
+        revoked = await disconnect(store, purge_all=args.purge)
     except RuntimeError as exc:
         print(f"[ERRORE] {exc}", file=sys.stderr)
         return 1
-    print(f"Cartella dati: {store.data_dir}")
     if args.purge:
-        print("Credenziali, sessione, contesto studente e allegati rimossi.")
+        print("Credenziali, sessione, contesto, cache e configurazione remota gestita rimossi.")
     else:
         print("Credenziali e sessione rimosse. Orario e note conservati.")
-        print("Su un computer condiviso usa `logout --purge` per cancellare tutto.")
+        print("Usa `logout --purge` per rimuovere anche contesto, cache e configurazione remota gestita.")
+    print("Arresta i processi MCP e i ponti collegati; Spaggiari non revoca la sessione lato server.")
     print("Nota: le variabili d'ambiente non vengono modificate; rimuovile a mano se le usi.")
-    return 0
+    _warn_google_revocation(revoked)
+    return 0 if revoked else 1
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
@@ -591,7 +610,8 @@ def main() -> None:
         action="store_true",
         help="Consenti il fallback in chiaro se Keyring e DPAPI non sono disponibili",
     )
-    login.add_argument("--verbose", action="store_true", help="Mostra scuola e classe in output")
+    login.add_argument("--verbose", action="store_true", help=argparse.SUPPRESS)
+    login.add_argument("--keep-local-data", action="store_true", help="Riusa i dati locali conservati per lo stesso account")
     login.add_argument(
         "--client",
         choices=CLIENT_FORMATS,
@@ -615,7 +635,7 @@ def main() -> None:
         action="store_true",
         help="Consenti la lettura del fallback in chiaro",
     )
-    doctor.add_argument("--verbose", action="store_true", help="Mostra scuola e classe in output")
+    doctor.add_argument("--verbose", action="store_true", help=argparse.SUPPRESS)
 
     set_url = sub.add_parser(
         "set-classroom-url", help="Salva il link segreto .ics di Google Classroom senza passare dalla chat"
@@ -635,8 +655,13 @@ def main() -> None:
     logout.add_argument(
         "--purge",
         action="store_true",
-        help="Rimuovi anche student_context.json e la cache degli allegati",
+        help="Rimuovi anche contesto, cache di file e configurazione remota gestita",
     )
+    classroom = sub.add_parser("classroom", help="Collega o scollega Google Classroom")
+    classroom_sub = classroom.add_subparsers(dest="classroom_command", required=True)
+    classroom_login = classroom_sub.add_parser("login", help="Autorizza Google nel browser locale con OAuth e PKCE")
+    classroom_login.add_argument("--client-secrets", required=True, type=Path, help="Percorso al JSON Google Desktop app")
+    classroom_sub.add_parser("logout", help="Rimuove le credenziali Classroom e revoca l'autorizzazione Google gestita")
 
     serve = sub.add_parser(
         "serve", help="Avvia il server MCP su trasporto stdio (default) o streamable-http"
@@ -691,7 +716,7 @@ def main() -> None:
     )
 
     remote_setup = sub.add_parser(
-        "remote-setup", help="Configura l'accesso remoto OAuth (app mobile) e mostra la passphrase"
+        "remote-setup", help="Configura l'accesso remoto OAuth (app mobile) con una passphrase nascosta"
     )
     remote_setup.add_argument("--rotate", action="store_true", help="Genera una nuova passphrase e scollega tutto")
     remote_setup.add_argument("--port", type=int, default=8765, help="Porta usata negli esempi (default 8765)")
@@ -717,7 +742,9 @@ def main() -> None:
     elif args.command == "set-classroom-url":
         sys.exit(_cmd_set_classroom_url(args))
     elif args.command == "logout":
-        sys.exit(_cmd_logout(args))
+        sys.exit(asyncio.run(_cmd_logout(args)))
+    elif args.command == "classroom":
+        sys.exit(asyncio.run(_cmd_classroom(args)))
     elif args.command == "serve":
         sys.exit(_cmd_serve(args))
     elif args.command == "remote-setup":

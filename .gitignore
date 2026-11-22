@@ -11,10 +11,16 @@ session_cache*.json
 student_context*.json
 client_secret*.json
 token*.json
+classroom_oauth*.json
+oauth_state*.json
+mcp_token*.json
+auth_generation
+classroom_generation
 
 # Local data, attachments & old prototype folders
 data/
 attachments/
+didactics/
 tmp/
 cache/
 .agents/

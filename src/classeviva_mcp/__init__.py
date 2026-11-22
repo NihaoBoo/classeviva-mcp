@@ -1,3 +1,3 @@
-"""classeviva-mcp — Connettore MCP ufficiale-standard per Spaggiari ClasseViva & Classroom iCal."""
+"""Connettore MCP indipendente per Spaggiari ClasseViva e Google Classroom."""
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"

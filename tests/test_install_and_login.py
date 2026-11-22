@@ -121,7 +121,7 @@ async def test_rejected_credentials_give_actionable_message_and_cooldown(tmp_pat
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
-        return httpx.Response(422, json={"statusCode": 422, "error": "251/CvvRestApi/wrong credentials"})
+        return httpx.Response(422, json={"statusCode": 422, "error": "251/CvvRestApi/synthetic-sensitive-detail"})
 
     client = _client_with(handler, username="mario@example.com")
     client.store = CredentialStore(fallback_dir=tmp_path, allow_insecure_plaintext=True)
@@ -129,6 +129,7 @@ async def test_rejected_credentials_give_actionable_message_and_cooldown(tmp_pat
         await client.login()
     msg = str(info.value)
     assert "251" in msg
+    assert "synthetic-sensitive-detail" not in msg
     assert "codice utente" in msg  # email hint
     assert "15-30 minuti" in msg
 

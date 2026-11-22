@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import ipaddress
+import json
 import logging
+import re
 import socket
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
+from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -21,6 +26,8 @@ ALLOWED_ICAL_HOSTS = frozenset({"calendar.google.com", "classroom.google.com"})
 MAX_ICAL_BYTES = 5 * 1024 * 1024  # 5 MB
 MAX_REDIRECTS = 3
 MAX_FIELD_CHARS = 4000
+MAX_API_PAGES = 100
+MAX_API_SECONDS = 25
 
 
 def _is_public_ip(ip_str: str) -> bool:
@@ -128,28 +135,30 @@ async def fetch_classroom_tasks(
     a `warnings` list describing what failed (without the URL or token).
     """
     result = ClassroomFetchResult()
-    if google_access_token.strip():
+    oauth_configured = bool(google_access_token.strip())
+    if oauth_configured:
         try:
-            oauth_items = await fetch_classroom_oauth_tasks(
+            result = await fetch_classroom_oauth_tasks(
                 google_access_token.strip(),
                 start_date=start_date,
                 end_date=end_date,
             )
-            result.items.extend(oauth_items)
         except Exception as exc:  # noqa: BLE001 - degraded mode, never leak token/URL
             logger.warning("Classroom OAuth non disponibile: %s", type(exc).__name__)
             result.warnings.append(
                 f"Google Classroom (OAuth): accesso non riuscito ({type(exc).__name__})."
             )
 
-    if ical_url.strip():
+    if ical_url.strip() and (not oauth_configured or result.warnings):
         try:
             ical_items = await fetch_classroom_ical_tasks(
                 ical_url.strip(),
                 start_date=start_date,
                 end_date=end_date,
             )
-            result.items.extend(ical_items)
+            # A degraded OAuth query may already contain deadlines from the feed.
+            known = {(it.date, it.title.casefold()) for it in result.items}
+            result.items.extend(it for it in ical_items if (it.date, it.title.casefold()) not in known)
         except Exception as exc:  # noqa: BLE001 - degraded mode, never leak token/URL
             logger.warning("Classroom iCal non disponibile: %s", type(exc).__name__)
             result.warnings.append(_ical_warning(exc))
@@ -157,54 +166,179 @@ async def fetch_classroom_tasks(
     return result
 
 
+class _ClassroomAPI:
+    """Bounded pagination shared by deadlines and materials."""
+
+    def __init__(self, client: httpx.AsyncClient, access_token: str) -> None:
+        self.client = client
+        self.headers = {"Authorization": f"Bearer {access_token}"}
+        self.remaining = MAX_API_PAGES
+        self.incomplete = False
+        self.auth_failed = False
+
+    async def pages(
+        self, path: str, key: str, **query: str
+    ) -> AsyncIterator[dict[str, Any]]:
+        seen: set[str] = set()
+        token = ""
+        while self.remaining and not self.auth_failed:
+            self.remaining -= 1
+            params = {**query, "pageSize": "50"}
+            if token:
+                params["pageToken"] = token
+            try:
+                async with self.client.stream(
+                    "GET", f"{CLASSROOM_API_BASE}/{path}", headers=self.headers, params=params,
+                ) as response:
+                    if response.status_code == 401:
+                        self.auth_failed = True
+                    response.raise_for_status()
+                    data = json.loads(await _read_limited(response, MAX_ICAL_BYTES))
+                if not isinstance(data, dict):
+                    raise ValueError
+                page = data.get(key, [])
+                if not isinstance(page, list):
+                    raise ValueError
+                for item in page:
+                    if isinstance(item, dict):
+                        yield item
+                    else:
+                        self.incomplete = True
+                token = data.get("nextPageToken") or ""
+                if not token:
+                    return
+                if not isinstance(token, str) or token in seen or len(token) > 4096:
+                    raise ValueError
+                seen.add(token)
+            except (httpx.HTTPError, ValueError):
+                break
+        self.incomplete = True
+
+    async def entries(self, *, materials: bool = False) -> AsyncIterator[tuple[str, str, str, dict[str, Any]]]:
+        async for course in self.pages("courses", "courses", courseStates="ACTIVE"):
+            course_id = str(course.get("id", ""))
+            if not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", course_id):
+                self.incomplete = True
+                continue
+            course_name = str(course.get("name") or "Classroom")[:200]
+            async for entry in self.pages(
+                f"courses/{course_id}/courseWork", "courseWork",
+                **({} if materials else {"orderBy": "dueDate desc"}),
+            ):
+                yield course_id, course_name, "work", entry
+            if materials:
+                async for entry in self.pages(f"courses/{course_id}/courseWorkMaterials", "courseWorkMaterial"):
+                    yield course_id, course_name, "material", entry
+            if self.auth_failed or not self.remaining:
+                self.incomplete = True
+                return
+
+    def warnings(self) -> list[str]:
+        if self.auth_failed:
+            return ["Google Classroom: verifica incompleta; riconnetti l'account con `classroom login`."]
+        if self.incomplete:
+            return ["Google Classroom: verifica incompleta; alcune pagine o corsi non sono stati verificati."]
+        return []
+
+
+def _deadline(due: dict[str, Any], clock: dict[str, Any] | None) -> tuple[str, str | None]:
+    day = date(int(due["year"]), int(due["month"]), int(due["day"]))
+    if clock is None:
+        return day.isoformat(), None
+    local = datetime(
+        day.year, day.month, day.day, int(clock.get("hours", 0)), int(clock.get("minutes", 0)),
+        int(clock.get("seconds", 0)), tzinfo=UTC,
+    ).astimezone(ROME_TZ)
+    return local.date().isoformat(), local.strftime("%H:%M")
+
+
 async def fetch_classroom_oauth_tasks(
     access_token: str,
     start_date: str | None = None,
     end_date: str | None = None,
-) -> list[AgendaItem]:
-    headers = {"Authorization": f"Bearer {access_token}"}
-    items: list[AgendaItem] = []
-
-    async with build_async_client(timeout=20.0, follow_redirects=False) as client:
-        c_resp = await client.get(
-            f"{CLASSROOM_API_BASE}/courses",
-            headers=headers,
-            params={"courseStates": "ACTIVE"},
-        )
-        c_resp.raise_for_status()
-        for course in c_resp.json().get("courses") or []:
-            course_id = course["id"]
-            course_name = course.get("name", "Classroom")
-            cw_resp = await client.get(
-                f"{CLASSROOM_API_BASE}/courses/{course_id}/courseWork",
-                headers=headers,
-                params={"orderBy": "dueDate desc", "pageSize": 15},
-            )
-            if cw_resp.status_code != 200:
-                continue
-            for work in cw_resp.json().get("courseWork") or []:
-                due = work.get("dueDate")
-                if not due:
-                    continue
-                date_str = f"{int(due['year']):04d}-{int(due['month']):02d}-{int(due['day']):02d}"
-                if start_date and date_str < start_date:
-                    continue
-                if end_date and date_str > end_date:
-                    continue
-                items.append(
-                    AgendaItem(
-                        id=f"gcal_oauth:{work['id']}",
-                        source="classroom_oauth",
-                        kind="assignment",
-                        subject=course_name,
-                        title=str(work.get("title", "Compito Classroom"))[:500],
-                        description=str(work.get("description", ""))[:MAX_FIELD_CHARS],
-                        date=date_str,
-                        url=str(work.get("alternateLink") or "")[:2000] or None,
+) -> ClassroomFetchResult:
+    items: dict[str, AgendaItem] = {}
+    async with build_async_client(timeout=8.0, follow_redirects=False) as client:
+        api = _ClassroomAPI(client, access_token)
+        try:
+            async with asyncio.timeout(MAX_API_SECONDS):
+                async for course_id, course_name, _, work in api.entries():
+                    due = work.get("dueDate")
+                    if not due:
+                        continue
+                    try:
+                        date_str, time = _deadline(due, work.get("dueTime"))
+                        item_id = f"gcal_oauth:{course_id}:{work['id']}"
+                    except (ValueError, TypeError, KeyError, AttributeError):
+                        api.incomplete = True
+                        continue
+                    if (start_date and date_str < start_date) or (end_date and date_str > end_date):
+                        continue
+                    items[item_id] = AgendaItem(
+                        id=item_id, source="classroom_oauth", kind="assignment", subject=course_name,
+                        title=str(work.get("title") or "Compito Classroom")[:500],
+                        description=str(work.get("description") or "")[:MAX_FIELD_CHARS],
+                        date=date_str, time=time, url=_google_link(work.get("alternateLink")),
                     )
-                )
-    items.sort(key=lambda x: x.date)
-    return items
+        except TimeoutError:
+            api.incomplete = True
+    return ClassroomFetchResult(sorted(items.values(), key=lambda item: (item.date, item.time or "")), api.warnings())
+
+
+def _google_link(value: Any) -> str | None:
+    if not isinstance(value, str) or len(value) > 2000:
+        return None
+    try:
+        parsed = urlparse(value)
+        if (
+            parsed.scheme == "https" and parsed.hostname in {"classroom.google.com", "drive.google.com", "docs.google.com"}
+            and parsed.username is None and parsed.password is None and parsed.port in (None, 443)
+        ):
+            return value
+    except ValueError:
+        pass
+    return None
+
+
+async def fetch_classroom_materials(access_token: str) -> tuple[list[dict[str, Any]], list[str]]:
+    """Metadata only. Never dereference attachment or external URLs."""
+    items: dict[str, dict[str, Any]] = {}
+    async with build_async_client(timeout=8.0, follow_redirects=False) as client:
+        api = _ClassroomAPI(client, access_token)
+        try:
+            async with asyncio.timeout(MAX_API_SECONDS):
+                async for course_id, subject, kind, entry in api.entries(materials=True):
+                    if not entry.get("id"):
+                        api.incomplete = True
+                        continue
+                    post_link = _google_link(entry.get("alternateLink"))
+                    post_title = str(entry.get("title") or "Materiale Classroom")[:240]
+                    date_str = str(entry.get("creationTime") or "")[:10]
+                    materials = entry.get("materials") or ([{}] if kind == "material" else [])
+                    if not isinstance(materials, list):
+                        api.incomplete = True
+                        continue
+                    for index, material in enumerate(materials):
+                        if not isinstance(material, dict):
+                            api.incomplete = True
+                            continue
+                        drive_wrapper = material.get("driveFile")
+                        drive = drive_wrapper.get("driveFile") if isinstance(drive_wrapper, dict) else None
+                        target = next(
+                            (part for part in (drive, material.get("link"), material.get("youtubeVideo"))
+                             if isinstance(part, dict)),
+                            {},
+                        )
+                        title = str(target.get("title") or post_title)[:240]
+                        link = _google_link(target.get("alternateLink")) or post_link
+                        item_id = f"classroom:{course_id}:{kind}:{entry['id']}:{index}"
+                        items[item_id] = {
+                            "id": item_id, "title": title, "source": "classroom", "date": date_str, "subject": subject,
+                            **({"url": link} if link else {}),
+                        }
+        except TimeoutError:
+            api.incomplete = True
+    return list(items.values()), api.warnings()
 
 
 async def fetch_classroom_ical_tasks(

@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -18,6 +20,8 @@ def _fake_client() -> Any:
     """A stub client returning deterministic data for every read-only endpoint."""
 
     class Fake:
+        agenda_calls = 0
+
         async def get_profile(self) -> Any:
             from classeviva_mcp.models import StudentProfile
 
@@ -67,6 +71,7 @@ def _fake_client() -> Any:
         async def get_agenda(self, start_date: str, end_date: str) -> list[Any]:
             from classeviva_mcp.models import AgendaItem
 
+            self.agenda_calls += 1
             return [
                 AgendaItem(
                     id="h1",
@@ -114,8 +119,53 @@ async def test_get_snapshot_returns_everything_in_one_call(
     assert snapshot["grades"]["grades_count"] == 1
     assert snapshot["absences"]["unjustified_count"] == 1
     assert snapshot["homework"]["count"] == 1
-    assert snapshot["agenda"]["count"] == 1
+    assert snapshot["agenda"]["count"] == 0
+    assert server._client.agenda_calls == 1
     assert snapshot["subjects_and_teachers"][0]["subject_name"] == "Informatica"
+
+
+@pytest.mark.asyncio
+async def test_homework_checks_only_requested_day_and_reports_unavailable_classeviva(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Unavailable:
+        async def get_agenda(self, start: str, end: str) -> list[Any]:
+            assert (start, end) == ("2026-11-23", "2026-11-23")
+            raise ConnectionError("synthetic-sensitive-message")
+
+    monkeypatch.setattr(server, "_client", Unavailable())
+    monkeypatch.setattr(server, "_store", CredentialStore(fallback_dir=tmp_path))
+    monkeypatch.setattr(server, "READ_ONLY_MODE", False)
+    monkeypatch.setattr(server, "now_rome", lambda: datetime(2026, 11, 22, tzinfo=ZoneInfo("Europe/Rome")))
+    response = await server.get_homework(start_date="2026-11-23", end_date="2026-11-23")
+    assert response["items"] == []
+    assert "ClasseViva" in response["warnings"][0]
+    assert "synthetic" not in str(response)
+
+
+@pytest.mark.asyncio
+async def test_homework_is_paged_and_does_not_send_full_descriptions_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from classeviva_mcp.models import AgendaItem
+
+    class Agenda:
+        async def get_agenda(self, start: str, end: str) -> list[AgendaItem]:
+            return [AgendaItem(
+                id=f"cvv:{i}", source="classeviva", kind="homework", title=f"Compito {i}",
+                subject="Matematica", date=start, description="Istruzioni dettagliate",
+            ) for i in range(3)]
+
+    monkeypatch.setattr(server, "_client", Agenda())
+    monkeypatch.setattr(server, "_store", CredentialStore(fallback_dir=tmp_path))
+    monkeypatch.setattr(server, "READ_ONLY_MODE", False)
+    first = await server.get_homework(limit=2)
+    assert [item["id"] for item in first["items"]] == ["cvv:0", "cvv:1"]
+    assert "description" not in first["items"][0]
+    following = await server.get_homework(cursor=first["next_cursor"], limit=2, include_details=True)
+    assert [item["id"] for item in following["items"]] == ["cvv:2"]
+    assert following["items"][0]["description"] == "Istruzioni dettagliate"
+    assert "next_cursor" not in following
 
 
 @pytest.mark.asyncio

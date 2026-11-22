@@ -208,7 +208,7 @@ async def test_list_didactics_filters_and_counts(mock_env: tuple[MockSpaggiariCl
     ]
 
     # No filters: all 3 folders, 4 files total
-    res = await server.list_didactics()
+    res = await server.list_didactics(view="folders")
     assert res["folders_count"] == 3
     assert res["files_count"] == 4
     assert res["subject_filter"] is None
@@ -217,25 +217,25 @@ async def test_list_didactics_filters_and_counts(mock_env: tuple[MockSpaggiariCl
     assert "Trovate 3 cartelle e 4 file" in res["summary"]
 
     # Subject filter (case insensitive and substring)
-    res_subj = await server.list_didactics(subject="  informatica  ")
+    res_subj = await server.list_didactics(subject="  informatica  ", view="folders")
     assert res_subj["folders_count"] == 2
     assert res_subj["files_count"] == 3
     assert res_subj["subject_filter"] == "informatica"
     assert all("Informatica" in f["folder_name"] for f in res_subj["folders"])
 
     # Teacher filter (case insensitive)
-    res_teacher = await server.list_didactics(teacher="neri")
+    res_teacher = await server.list_didactics(teacher="neri", view="folders")
     assert res_teacher["folders_count"] == 1
     assert res_teacher["files_count"] == 1
     assert res_teacher["folders"][0]["teacher_name"] == "Prof. Luigi Neri"
 
     # Combined filter
-    res_both = await server.list_didactics(subject="database", teacher="rossi")
+    res_both = await server.list_didactics(subject="database", teacher="rossi", view="folders")
     assert res_both["folders_count"] == 1
     assert res_both["folders"][0]["folder_name"] == "Informatica - Database Relazionali"
 
     # Non-matching filter
-    res_empty = await server.list_didactics(subject="filosofia")
+    res_empty = await server.list_didactics(subject="filosofia", view="folders")
     assert res_empty["folders_count"] == 0
     assert res_empty["files_count"] == 0
     assert res_empty["folders"] == []
@@ -248,9 +248,7 @@ async def test_list_didactics_error_resilience(mock_env: tuple[MockSpaggiariClie
     client.raise_on_didactics = True
 
     res = await server.list_didactics()
-    assert res["folders_count"] == 0
-    assert res["files_count"] == 0
-    assert res["folders"] == []
+    assert res["items"] == []
     assert len(res["warnings"]) == 1
     assert "Materiali didattici non disponibili" in res["warnings"][0]
 
@@ -269,7 +267,7 @@ async def test_download_didactics_item_pdf_extraction_and_permissions(
     client._didactics_download_map[101] = (pdf_bytes, "limiti.pdf", "application/pdf")
 
     # Download with default path
-    res = await server.download_didactics_item(file_id=101)
+    res = await server.download_didactics_item(file_id=101, include_text=True)
     assert res["file_id"] == 101
     assert res["file_name"] == "limiti.pdf"
     assert res["content_type"] == "application/pdf"
@@ -299,7 +297,7 @@ async def test_download_didactics_item_docx_extraction(
     docx_bytes = _sample_docx_bytes(docx_text)
     client._didactics_download_map[102] = (docx_bytes, "database_esercizi.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
-    res = await server.download_didactics_item(file_id=102)
+    res = await server.read_didactics_item(file_id=102)
     assert res["file_id"] == 102
     assert res["file_name"] == "database_esercizi.docx"
     assert docx_text in res["text"]
@@ -320,7 +318,7 @@ async def test_download_didactics_item_truncation_over_10k_chars(
     doc.close()
     client._didactics_download_map[103] = (long_pdf, "dispensa_lunga.pdf", "application/pdf")
 
-    res = await server.download_didactics_item(file_id=103)
+    res = await server.read_didactics_item(file_id=103)
     assert res["is_text_truncated"] is True
     assert "[Testo troncato:" in res["text"]
     assert "caratteri totali]" in res["text"]
@@ -334,10 +332,10 @@ async def test_download_didactics_item_binary_file(
     raw_bin = b"\x00\x01\x02\x03\x04\xff\xfe"
     client._didactics_download_map[104] = (raw_bin, "firmware.bin", "application/octet-stream")
 
-    res = await server.download_didactics_item(file_id=104)
+    res = await server.read_didactics_item(file_id=104)
     assert res["text"] == ""
     assert res["is_text_truncated"] is False
-    assert "(nessun testo estraibile)" in res["summary"]
+    assert "saved_path" not in res
 
 
 # ============================================================================

@@ -4,26 +4,47 @@ Tutte le modifiche rilevanti sono documentate in questo file.
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e il
 progetto adotta [Semantic Versioning](https://semver.org/lang/it/).
 
-## [Unreleased]
+## [1.6.0]
+
+### Added
+
+- `classroom login --client-secrets …` and `classroom logout`: OAuth desktop,
+  PKCE, automatic refresh in protected storage and Google grant revocation.
+- `search_materials` searches both sources; Classroom exposes original links
+  but does not download Drive files.
+- `read_didactics_item` reads without saving. `prepare_attachment` offers a
+  temporary binary MCP resource for the selected file or one PDF page as PNG.
 
 ### Changed
 
 - **`get_today_context` più compatto**: invece dell'intero orario settimanale restituisce
   `lessons_today` e `lessons_next_school_day` (dall'orario salvato) e un breve
   `student_context.timetable_summary`. L'orario completo, con i giorni in ordine di
-  settimana, si chiede con `include_timetable=True`; `get_snapshot` continua a includerlo.
+  settimana, si chiede con `include_timetable=True`.
 - `weekday` è ora in italiano (es. `Martedì`).
+- `get_homework` accepts precise dates and reports partial coverage per source;
+  Classroom follows API pagination and converts due times to Europe/Rome.
+- `list_didactics` returns a flat page by default (use `view='folders'` for
+  paginated folders). `download_didactics_item` only saves by default; use
+  `include_text=True` for the former save-and-extract behavior.
+- `read_notice_pdf` does not save files by default. The read-receipt consent
+  remains required.
 
 ### Removed
 
 - `student_context.seen_notice_ids` non viene più restituito all'agente: è uno stato
   interno del server e occupava solo token.
+- `get_snapshot` no longer repeats homework in agenda or reports the total
+  Didattica file count as new files.
 
 ### Fixed
 
 - `remote-setup`: la validazione della passphrase usa di nuovo un solo controllo e il
   minimo di caratteri mostrato deriva dalla costante, invece di un valore scritto a mano.
 - Test dello snapshot che dipendeva dalla data corrente (falliva dopo il 10/11/2026).
+- Login replaces the successful Spaggiari account as one record and invalidates
+  the previous session. Logout clears managed authentication, and `--purge`
+  also clears both file caches without removing external exports.
 
 ## [1.5.0] - 2026-11-10
 

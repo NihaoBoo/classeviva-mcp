@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import re
 import time
 from typing import Any
@@ -55,6 +56,13 @@ class ClasseVivaAuthError(ClasseVivaError):
     """Spaggiari rejected the credentials (wrong password, wrong user, locked account)."""
 
 
+def validate_file_id(value: int | str) -> str:
+    clean = str(value)
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", clean):
+        raise ValueError("Identificativo file non valido.")
+    return clean
+
+
 def _credentials_fingerprint(creds: StoredCredentials) -> str:
     raw = f"{creds.username}\x00{creds.password}\x00{creds.preferred_profile}".encode()
     return hashlib.sha256(raw).hexdigest()
@@ -84,8 +92,9 @@ def explain_login_failure(status_code: int, error_text: str, username: str) -> s
     hints.append("verifica la password accedendo a https://web.spaggiari.eu dal browser")
     hints.append("se accedi solo con 'Accedi con Google/SPID' imposta prima una password ClasseViva dal portale")
     hints.append("dopo molti tentativi errati Spaggiari blocca l'accesso: attendi 15-30 minuti")
+    code = ", codice Spaggiari 251" if error_text.startswith("251/CvvRestApi/") else ""
     return (
-        f"Credenziali rifiutate da ClasseViva (HTTP {status_code}: {error_text}). "
+        f"Credenziali rifiutate da ClasseViva (HTTP {status_code}{code}). "
         "Suggerimenti: " + "; ".join(hints) + "."
     )
 
@@ -118,8 +127,10 @@ class SpaggiariClient:
         self._first_name: str = ""
         self._last_name: str = ""
         self._semaphore = asyncio.Semaphore(2)
+        self._login_lock = asyncio.Lock()
         self._cache: dict[str, tuple[float, Any]] = {}
         self._auth_failure: tuple[str, float, str] | None = None
+        self._auth_generation = self.store.auth_generation() if credentials is None else ""
         if credentials is None:
             self._load_cached_session()
 
@@ -128,6 +139,7 @@ class SpaggiariClient:
         self._cache.clear()
 
     def _cache_get(self, key: str) -> Any | None:
+        self._sync_auth()
         entry = self._cache.get(key)
         if entry is None:
             return None
@@ -164,13 +176,37 @@ class SpaggiariClient:
             self._owned_client = None
 
     def _load_cached_session(self) -> None:
+        if not self._auth_generation or (os.getenv("CLASSEVIVA_USER") and os.getenv("CLASSEVIVA_PASSWORD")):
+            return
         cached = self.store.load_session()
-        if cached and cached.get("token") and cached.get("student_id"):
+        if (cached and cached.get("generation") == self._auth_generation
+                and cached.get("token") and cached.get("student_id")):
             self._token = str(cached["token"])
             self._ident = str(cached.get("ident", ""))
             self._student_id = str(cached["student_id"])
-            self._first_name = str(cached.get("first_name", ""))
-            self._last_name = str(cached.get("last_name", ""))
+
+    def _sync_auth(self) -> None:
+        if self._credentials is not None:
+            return
+        generation = self.store.auth_generation()
+        if generation != self._auth_generation:
+            self._auth_generation = generation
+            self._token = self._ident = self._student_id = self._first_name = self._last_name = ""
+            self._auth_failure = None
+            self.invalidate_cache()
+
+    def _check_auth_generation(self, generation: str) -> None:
+        self._sync_auth()
+        if generation != self._auth_generation:
+            raise ClasseVivaAuthError("Account cambiato durante la richiesta. Riprova.")
+
+    async def _ensure_session(self) -> None:
+        self._sync_auth()
+        if not self._token or not self._student_id:
+            async with self._login_lock:
+                self._sync_auth()
+                if not self._token or not self._student_id:
+                    await self.login()
 
     @staticmethod
     def extract_numeric_id(ident: str) -> str:
@@ -225,6 +261,8 @@ class SpaggiariClient:
         so that a burst of tool calls does not lock the account; changing the
         stored credentials (``login`` again) clears the cooldown immediately.
         """
+        self._sync_auth()
+        generation = self._auth_generation
         creds = self._credentials or self.store.load()
         fingerprint = _credentials_fingerprint(creds)
         if self._auth_failure is not None:
@@ -260,6 +298,7 @@ class SpaggiariClient:
             resp = await self._raw_post_login(payload)
             data = self._parse_login_json(resp)
 
+        self._check_auth_generation(generation)
         if resp.status_code in (401, 403, 422) or not data.get("token"):
             message = explain_login_failure(resp.status_code, _spaggiari_error_text(data, resp), creds.username)
             self._auth_failure = (
@@ -275,12 +314,13 @@ class SpaggiariClient:
         self._first_name = str(data.get("firstName", ""))
         self._last_name = str(data.get("lastName", ""))
 
-        if self._persist_session:
+        if self._persist_session and generation and creds.source != "env":
             self.store.save_session(
                 {
                     "token": self._token,
                     "ident": self._ident,
                     "student_id": self._student_id,
+                    "generation": generation,
                 }
             )
 
@@ -300,11 +340,13 @@ class SpaggiariClient:
         accept_binary: bool = False,
         **kwargs: Any,
     ) -> httpx.Response:
-        if not self._token or not self._student_id:
-            await self.login()
-
+        self._sync_auth()
+        generation = self._auth_generation
         async with self._semaphore:
+            self._check_auth_generation(generation)
+            await self._ensure_session()
             for attempt in range(3):
+                self._check_auth_generation(generation)
                 headers = dict(DEFAULT_HEADERS)
                 headers["Z-Auth-Token"] = self._token
                 if accept_binary:
@@ -316,6 +358,7 @@ class SpaggiariClient:
                 except httpx.HTTPError as exc:
                     raise ClasseVivaError(describe_network_error(exc)) from exc
 
+                self._check_auth_generation(generation)
                 if 300 <= resp.status_code < 400:
                     raise ClasseVivaError(
                         "Redirect inatteso dall'API Spaggiari: richiesta interrotta per sicurezza."
@@ -372,6 +415,8 @@ class SpaggiariClient:
         """
         if max_bytes is None:
             max_bytes = MAX_ATTACHMENT_BYTES
+        await self._ensure_session()
+        generation = self._auth_generation
         url = (
             f"{BASE_URL}/students/{self._student_id}/noticeboard/attach/"
             f"{event_code}/{pub_id}/{num}"
@@ -386,16 +431,22 @@ class SpaggiariClient:
             else self._http()
         )
         try:
-            return await self._download_attachment_with_client(
+            raw = await self._download_attachment_with_client(
                 client, url, headers, max_bytes
             )
+            self._check_auth_generation(generation)
+            return raw
         except httpx.HTTPStatusError as exc:
+            self._check_auth_generation(generation)
             if auto_unlock and exc.response.status_code == 404:
-                logger.info("Allegato %s bloccato (404): sblocco circolare %s...", num, pub_id)
+                logger.info("Allegato bloccato (404): tentativo di sblocco circolare.")
                 if await self.mark_notice_read(event_code, pub_id):
-                    return await self._download_attachment_with_client(
+                    self._check_auth_generation(generation)
+                    raw = await self._download_attachment_with_client(
                         client, url, headers, max_bytes
                     )
+                    self._check_auth_generation(generation)
+                    return raw
             raise
 
     async def _download_attachment_with_client(
@@ -426,8 +477,8 @@ class SpaggiariClient:
 
     async def get_profile(self) -> StudentProfile:
         """Returns student & school profile details from /students/{id}/cards."""
-        if not self._token or not self._student_id:
-            await self.login()
+        await self._ensure_session()
+        generation = self._auth_generation
         cached = self._cache_get("profile")
         if cached is not None:
             # Copy: callers may tweak the returned profile (e.g. fill in the
@@ -455,9 +506,12 @@ class SpaggiariClient:
                 school_name = " ".join(p for p in sch_parts if p).strip()
                 if school_name or school_class:
                     break
+            except ClasseVivaAuthError:
+                raise
             except Exception:
                 continue
 
+        self._check_auth_generation(generation)
         profile = StudentProfile(
             ident=self._ident,
             student_id=self._student_id,
@@ -720,6 +774,8 @@ class SpaggiariClient:
         ``attachment_index`` is the 0-based index into the sorted attachment list;
         when set, only that attachment is downloaded.
         """
+        self._sync_auth()
+        generation = self._auth_generation
         text_body = ""
         notice_title = ""
         attachments_meta: list[dict[str, Any]] = []
@@ -740,6 +796,7 @@ class SpaggiariClient:
                     break
         except Exception:
             pass
+        self._check_auth_generation(generation)
 
         # Without explicit consent we must never reach the `read` endpoint,
         # because that call marks the notice as read on the registry.
@@ -773,6 +830,7 @@ class SpaggiariClient:
             marked_as_read = was_unread
         except Exception:
             pass
+        self._check_auth_generation(generation)
 
         if read_endpoint_called:
             # The remote read state may have changed: drop the cached noticeboard.
@@ -808,6 +866,7 @@ class SpaggiariClient:
         downloaded: list[dict[str, Any]] = []
         total_bytes = 0
         for num, fname in nums_to_try:
+            self._check_auth_generation(generation)
             remaining = MAX_NOTICE_TOTAL_BYTES - total_bytes
             if remaining <= 0:
                 logger.warning("Limite totale allegati della circolare raggiunto.")
@@ -829,11 +888,12 @@ class SpaggiariClient:
                     )
                     total_bytes += len(attachment_bytes)
             except Exception as exc:  # noqa: BLE001 - one bad attachment must not break the notice
+                self._check_auth_generation(generation)
                 is_404 = (
                     isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404
                 ) or (hasattr(exc, "response") and getattr(exc.response, "status_code", None) == 404)
                 if is_404:
-                    logger.info("Allegato %s bloccato (404): sblocco circolare %s...", num, pub_id)
+                    logger.info("Allegato bloccato (404): tentativo di sblocco circolare.")
                     unlocked = await self.mark_notice_read(event_code, pub_id)
                     if unlocked:
                         marked_as_read = True
@@ -865,6 +925,7 @@ class SpaggiariClient:
                 continue
 
         primary_bytes = downloaded[0]["bytes"] if downloaded else b""
+        self._check_auth_generation(generation)
         return {
             "text_body": text_body,
             "notice_title": notice_title,
@@ -902,7 +963,7 @@ class SpaggiariClient:
             return resp.status_code == 200
         except Exception as exc:
             logger.warning(
-                "Impossibile contrassegnare la circolare %s come letta: %s", pub_id, exc
+                "Impossibile contrassegnare la circolare come letta: %s", type(exc).__name__
             )
             return False
 
@@ -1031,8 +1092,9 @@ class SpaggiariClient:
 
         Returns: (raw_bytes, file_name, content_type)
         """
-        if not self._token or not self._student_id:
-            await self.login()
+        content_id = validate_file_id(content_id)
+        await self._ensure_session()
+        generation = self._auth_generation
 
         url = f"{BASE_URL}/students/{self._student_id}/didactics/item/{content_id}"
         headers = dict(DEFAULT_HEADERS)
@@ -1058,6 +1120,7 @@ class SpaggiariClient:
                 async with client.stream("GET", target, headers={}) as cdn_response:
                     cdn_response.raise_for_status()
                     data = await self._read_limited(cdn_response, max_bytes)
+                    self._check_auth_generation(generation)
                     fname = self._parse_content_disposition_filename(cdn_response.headers)
                     if not fname:
                         path_last = parsed.path.rsplit("/", 1)[-1]
@@ -1073,6 +1136,7 @@ class SpaggiariClient:
 
             response.raise_for_status()
             data = await self._read_limited(response, max_bytes)
+            self._check_auth_generation(generation)
             fname = (
                 self._parse_content_disposition_filename(response.headers)
                 or f"didactic_{content_id}"
@@ -1316,8 +1380,8 @@ class SpaggiariClient:
         max_bytes: int = MAX_ATTACHMENT_BYTES,
     ) -> bytes:
         """Downloads an official school document (e.g. report card) with byte streaming."""
-        if not self._token or not self._student_id:
-            await self.login()
+        await self._ensure_session()
+        generation = self._auth_generation
 
         url = f"{BASE_URL}/students/{self._student_id}/documents/read/{doc_hash}"
         headers = dict(DEFAULT_HEADERS)
@@ -1342,10 +1406,14 @@ class SpaggiariClient:
                     raise ClasseVivaError("Redirect documento verso host non consentito.")
                 async with client.stream("GET", target, headers={}) as cdn_response:
                     cdn_response.raise_for_status()
-                    return await self._read_limited(cdn_response, max_bytes)
+                    data = await self._read_limited(cdn_response, max_bytes)
+                    self._check_auth_generation(generation)
+                    return data
 
             response.raise_for_status()
-            return await self._read_limited(response, max_bytes)
+            data = await self._read_limited(response, max_bytes)
+            self._check_auth_generation(generation)
+            return data
 
     async def get_schoolbooks(
         self, subject_filter: str | None = None
@@ -1406,4 +1474,3 @@ class SpaggiariClient:
 
         books.sort(key=lambda x: (x.subject, x.title))
         return books
-
